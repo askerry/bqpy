@@ -28,9 +28,13 @@ def list_projects(service):
         # Start training on a data set
         projects = service.projects()
         list_reply = projects.list().execute()
-
-        print 'Project list:'
-        pprint.pprint(list_reply)
+        if 'projects' in list_reply:
+            print 'Project list:'
+            projects = list_reply['projects']
+            for p in projects:
+                print "%s: %s" % (p['friendlyName'], p['id'])
+        else:
+            print "No projects found."
 
     except apiclient.errors.HttpError as err:
         print 'Error in ListProjects:', pprint.pprint(err.content)
@@ -40,8 +44,14 @@ def list_datasets(service, project):
     try:
         datasets = service.datasets()
         list_reply = datasets.list(projectId=project).execute()
-        print 'Dataset list:'
-        pprint.pprint(list_reply)
+        if 'datasets' in list_reply:
+
+            print 'Dataset list:'
+            datasets = list_reply['datasets']
+            for d in datasets:
+                print d['datasetReference']['datasetId']
+        else:
+            print "No datasets found."
 
     except apiclient.errors.HttpError as err:
         print 'Error in ListDatasets:', pprint.pprint(err.content)
@@ -50,9 +60,15 @@ def list_datasets(service, project):
 def list_tables(service, project, dataset):
     try:
         tables = service.tables()
-        listReply = tables.list(projectId=project, datasetId=dataset).execute()
-        print 'Tables list:'
-        pprint.pprint(listReply)
+        list_reply = tables.list(
+            projectId=project, datasetId=dataset).execute()
+        if 'tables' in list_reply:
+            print 'Tables list:'
+            tables = list_reply['tables']
+            for t in tables:
+                print t['tableReference']['tableId']
+        else:
+            print "No tables found."
 
     except apiclient.errors.HttpError as err:
         print 'Error in listTables:', pprint.pprint(err.content)
