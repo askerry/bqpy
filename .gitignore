@@ -1,0 +1,3 @@
+*.pyc
+login.json
+.ipynb_checkpoints/
