@@ -1,3 +1,6 @@
+''' pybq.bqviz: helper functions that support plotting functionality of BQDF
+'''
+
 import numpy as np
 import matplotlib.pyplot as plt
 

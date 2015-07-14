@@ -90,6 +90,7 @@ class BQDF():
         return bqresult_2_df(fields, data)
 
     def join(self, df2, on=None, left_on=None, right_on=None, how='LEFT', fetch=True):
+        '''joins table with table referenced in df2 and optionally returns result'''
         if left_on is None:
             left_on = on
             right_on = on
@@ -98,51 +99,59 @@ class BQDF():
         print joinstr
         with util.Mask_Printing():
             output, source = self.query(joinstr, fetch=fetch)
-        return output
+        return output, source
 
     def count(self, col):
+        '''return count of non-null entries in column'''
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT COUNT(%s) from %s' % (col, self.tablename), fetch=False)
         return output.values[0][0]
 
     def min(self, col):
+        '''return minimum value of column'''
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT MIN(%s) from %s' % (col, self.tablename), fetch=False)
         return output.values[0][0]
 
     def max(self, col):
+        '''return maximum value of column'''
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT MAX(%s) from %s' % (col, self.tablename), fetch=False)
         return output.values[0][0]
 
     def mean(self, col):
+        '''return mean of column'''
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT AVG(%s) from %s' % (col, self.tablename), fetch=False)
         return output.values[0][0]
 
     def sum(self, col):
+        '''return sum of column'''
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT SUM(%s) from %s' % (col, self.tablename), fetch=False)
         return output.values[0][0]
 
     def std(self, col):
+        '''return standard deviation of column'''
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT STDDEV(%s) from %s' % (col, self.tablename), fetch=False)
         return output.values[0][0]
 
     def mode(self, col):
+        '''return mode of column (if multiple, returns first listed)'''
         with util.Mask_Printing():
             output, source = self.query('SELECT COUNT(%s) as frequency from %s GROUP BY %s ORDER BY frequency DESC' % (
                 col, self.tablename, col), fetch=False)
         return output.iloc[0, 0]
 
     def percentiles(self, col):
+        '''returns 25th, 50th, and 75t percentiles of column'''
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT QUANTILEs(%s, 5) from %s' % (col, self.tablename), fetch=False)
@@ -152,6 +161,7 @@ class BQDF():
         return perc_25, perc_50, perc_75
 
     def describe(self):
+        '''replicates df.describe() by returning a dataframe with summary measures for each numeric column'''
         with util.Mask_Printing():
             fields = self.table_schema
         describe_data = {}
@@ -182,6 +192,7 @@ class BQDF():
         return bqresult_2_df(fields, data)[col].values
 
     def plot(self, grouping_col, value_col, kind='bar'):
+        '''plots the mean of value_col (Y), broken down by grouping_col (X) and returns plot axis'''
         plotdf = self.groupby(
             grouping_col, [(value_col, 'mean'), (value_col, 'std'), (value_col, 'count')])
         return bqviz._plot_grouped_data(plotdf, value_col, grouping_col, kind=kind)
