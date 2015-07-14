@@ -1,7 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-def get_summaries(plotdf, value_col, grouping_col):
+def _get_summaries(plotdf, value_col, grouping_col):
+    '''generates labels, means, and sems for plotting'''
     labels = plotdf[grouping_col].values
     means = plotdf[value_col + '_mean'].values
     stds = plotdf[value_col + '_std'].values
@@ -10,8 +11,9 @@ def get_summaries(plotdf, value_col, grouping_col):
     return labels, means, sems
 
 
-def plot_grouped_data(plotdf, value_col, grouping_col, kind='bar'):
-    labels, means, sems = get_summaries(plotdf, value_col, grouping_col)
+def _plot_grouped_data(plotdf, value_col, grouping_col, kind='bar'):
+    '''plots data from value_col (Y), grouped by grouping_col (X)'''
+    labels, means, sems = _get_summaries(plotdf, value_col, grouping_col)
     f, ax = plt.subplots(figsize=[14, 3])
     xaxis = range(len(means))
     if kind == 'line':
