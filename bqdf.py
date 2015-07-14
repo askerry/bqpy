@@ -1,4 +1,4 @@
-''' pybq.bqdf: defines BQDF class with provides primary vaguely pandas-esque
+''' pybq.bqdf: defines BQDF class which provides a vaguely pandas-esque
 interface with a specific bigquery table
 
 Note: some of this  may become obsolete when https://github.com/pydata/pandas/blob/master/pandas/io/gbq.py
