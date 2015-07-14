@@ -24,7 +24,8 @@ def run_query(client, querystr, destination_table=None, dry_run=False):
             if destination is None, client will create temporary table. 
         dry_run (bool): if True, query won't actually execute but just return stats on query
     OUPUTS:
-        query_response (dict): dictionary summarizing effect of query, including remote destination table that contains the query results
+        query_response (dict): dictionary summarizing action taken by query,
+            including remote destination table that contains the query results
     '''
     if destination_table is not None:
         print "writing to temporary table %s" % destination_table
