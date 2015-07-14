@@ -120,7 +120,7 @@ def copy_table(service, source=None, target=None):
         source (dict): dictionary specifying cp source (keys: 'projectId', 'datasetId', 'tableId')
         target (dict): dictionary specifying cp target (keys: 'projectId', 'datasetId', 'tableId')
     """
-
+    try:
         jobCollection = service.jobs()
         jobData = {
             "projectId": sourceProjectId,

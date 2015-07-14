@@ -51,7 +51,7 @@ def fetch_query(client, query_response, start_row=0, max_rows=max_rows):
     return fields, data
 
 
-def bigquery_connect(project_id='durable-footing-95814'):
+def bigquery_connect(project_id=None):
     '''connects to a bigquery client for the provided project_id
 
     INPUTS:

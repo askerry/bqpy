@@ -31,13 +31,17 @@ class BQDF():
         self.tablename = tablename
         self.allstring = "SELECT * FROM %s LIMIT 1" % tablename
         self.max_rows = max_rows
+        self.active_col = None
+        for col in self.columns:
+            funcstr = "lambda self=self:self.set_active_col('%s')" % col
+            setattr(BQDF, col, property(eval(funcstr)))
 
     def query(self, querystr, fetch=True):
         '''execute any arbitary query on the associated table'''
         return bigquery_query(querystr, self.client, fetch=fetch)
 
     @property
-    def col_names(self):
+    def columns(self):
         '''returns list of column names from table'''
         with util.Mask_Printing():
             query_response = run_query(self.client, self.allstring)
@@ -52,7 +56,6 @@ class BQDF():
             query_response = run_query(self.client, self.allstring)
         fields, data = fetch_query(
             self.client, query_response, start_row=0, max_rows=1)
-
         print "Table Schema for %s" % self.tablename
         for f in fields:
             others = [
@@ -66,7 +69,7 @@ class BQDF():
         with util.Mask_Printing():
             output, source = self.query(
                 "SELECT COUNT(*) from %s" % (self.tablename), fetch=False)
-        return (int(output.values[0][0]), len(self.col_names))
+        return (int(output.values[0][0]), len(self.columns))
 
     def groupby(self, groupingcol, operations, max_rows=max_rows):
         '''groups data by grouping column and performs requested operations on other columns
@@ -101,63 +104,94 @@ class BQDF():
             output, source = self.query(joinstr, fetch=fetch)
         return output, source
 
-    def count(self, col):
+    def set_active_col(self, col):
+        self.active_col = col
+        return self
+    
+    def clear_active_col(self):
+        self.active_col=None
+
+    def count(self, col=None):
         '''return count of non-null entries in column'''
+        if col is None:
+            col=self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT COUNT(%s) from %s' % (col, self.tablename), fetch=False)
+        self.clear_active_col()
         return output.values[0][0]
 
-    def min(self, col):
+    def min(self, col=None):
         '''return minimum value of column'''
+        if col is None:
+            col=self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT MIN(%s) from %s' % (col, self.tablename), fetch=False)
+        self.clear_active_col()
         return output.values[0][0]
 
-    def max(self, col):
+    def max(self, col=None):
         '''return maximum value of column'''
+        if col is None:
+            col=self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT MAX(%s) from %s' % (col, self.tablename), fetch=False)
+        self.clear_active_col()
         return output.values[0][0]
 
-    def mean(self, col):
+    def mean(self, col=None):
         '''return mean of column'''
+        if col is None:
+            col=self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT AVG(%s) from %s' % (col, self.tablename), fetch=False)
+        self.clear_active_col()
         return output.values[0][0]
 
-    def sum(self, col):
+    def sum(self, col=None):
         '''return sum of column'''
+        if col is None:
+            col=self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT SUM(%s) from %s' % (col, self.tablename), fetch=False)
+        self.clear_active_col()
         return output.values[0][0]
 
-    def std(self, col):
+    def std(self, col=None):
         '''return standard deviation of column'''
+        if col is None:
+            col=self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT STDDEV(%s) from %s' % (col, self.tablename), fetch=False)
+        self.clear_active_col()
         return output.values[0][0]
 
-    def mode(self, col):
+    def mode(self, col=None):
         '''return mode of column (if multiple, returns first listed)'''
+        if col is None:
+            col=self.active_col
         with util.Mask_Printing():
             output, source = self.query('SELECT COUNT(%s) as frequency from %s GROUP BY %s ORDER BY frequency DESC' % (
                 col, self.tablename, col), fetch=False)
+        self.clear_active_col()
         return output.iloc[0, 0]
 
-    def percentiles(self, col):
+    def percentiles(self, col=None):
         '''returns 25th, 50th, and 75t percentiles of column'''
+        if col is None:
+            col=self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT QUANTILEs(%s, 5) from %s' % (col, self.tablename), fetch=False)
         perc_25 = output.iloc[1, 0]
         perc_50 = output.iloc[2, 0]
         perc_75 = output.iloc[3, 0]
+        self.clear_active_col()
         return perc_25, perc_50, perc_75
 
     def describe(self):
@@ -179,8 +213,10 @@ class BQDF():
                 describe_data[f['name']] = column
         return pd.DataFrame(data=describe_data, index=rows)
 
-    def unique(self, col):
+    def unique(self, col=None):
         '''find unique values in the requested column'''
+        if col is None:
+            col=self.active_col
         unique_query = "SELECT %s FROM %s GROUP BY %s" % (
             col, self.tablename, col)
         print unique_query
@@ -188,7 +224,7 @@ class BQDF():
             query_response = run_query(self.client, unique_query)
         fields, data = fetch_query(
             self.client, query_response, start_row=0, max_rows=self.max_rows)
-
+        self.clear_active_col()
         return bqresult_2_df(fields, data)[col].values
 
     def plot(self, grouping_col, value_col, kind='bar'):
@@ -197,8 +233,10 @@ class BQDF():
             grouping_col, [(value_col, 'mean'), (value_col, 'std'), (value_col, 'count')])
         return bqviz._plot_grouped_data(plotdf, value_col, grouping_col, kind=kind)
 
-    def hist(self, col, bins=20, ax=None):
+    def hist(self, col=None, bins=20, ax=None):
         '''plots a histogram of the desired column, returns the df used for plotting'''
+        if col is None:
+            col=self.active_col
         binbreaks = self._get_binbreaks(col, bins=bins)
         countstr = _create_sum_str(col, binbreaks)
         querystr = 'SELECT %s FROM %s' % (countstr, self.tablename)
@@ -211,6 +249,7 @@ class BQDF():
         ax.set_xticklabels(labels, rotation=90)
         ax.set_ylabel('frequency')
         ax.set_title("%s histogram" % col)
+        self.clear_active_col()
         return df.T
 
     def _get_binbreaks(self, col, bins=20):
