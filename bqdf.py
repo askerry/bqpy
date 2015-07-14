@@ -71,6 +71,18 @@ class BQDF():
                 "SELECT COUNT(*) from %s" % (self.tablename), fetch=False)
         return (int(output.values[0][0]), len(self.columns))
 
+    def where(self, *args, **kwargs):
+        if 'fetch' in kwargs:
+            fetch=kwargs['fetch']
+        else:
+            fetch=True
+        filter_query = "SELECT * FROM %s WHERE %s" % (
+            self.tablename, _create_where_statement(args))
+        print filter_query
+        with util.Mask_Printing():
+            output, source = self.query(filter_query, fetch=fetch)
+        return output, source
+
     def groupby(self, groupingcol, operations, max_rows=max_rows):
         '''groups data by grouping column and performs requested operations on other columns
         INPUTS:
@@ -107,14 +119,14 @@ class BQDF():
     def set_active_col(self, col):
         self.active_col = col
         return self
-    
+
     def clear_active_col(self):
-        self.active_col=None
+        self.active_col = None
 
     def count(self, col=None):
         '''return count of non-null entries in column'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT COUNT(%s) from %s' % (col, self.tablename), fetch=False)
@@ -124,7 +136,7 @@ class BQDF():
     def min(self, col=None):
         '''return minimum value of column'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT MIN(%s) from %s' % (col, self.tablename), fetch=False)
@@ -134,7 +146,7 @@ class BQDF():
     def max(self, col=None):
         '''return maximum value of column'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT MAX(%s) from %s' % (col, self.tablename), fetch=False)
@@ -144,7 +156,7 @@ class BQDF():
     def mean(self, col=None):
         '''return mean of column'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT AVG(%s) from %s' % (col, self.tablename), fetch=False)
@@ -154,7 +166,7 @@ class BQDF():
     def sum(self, col=None):
         '''return sum of column'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT SUM(%s) from %s' % (col, self.tablename), fetch=False)
@@ -164,7 +176,7 @@ class BQDF():
     def std(self, col=None):
         '''return standard deviation of column'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT STDDEV(%s) from %s' % (col, self.tablename), fetch=False)
@@ -174,7 +186,7 @@ class BQDF():
     def mode(self, col=None):
         '''return mode of column (if multiple, returns first listed)'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         with util.Mask_Printing():
             output, source = self.query('SELECT COUNT(%s) as frequency from %s GROUP BY %s ORDER BY frequency DESC' % (
                 col, self.tablename, col), fetch=False)
@@ -184,7 +196,7 @@ class BQDF():
     def percentiles(self, col=None):
         '''returns 25th, 50th, and 75t percentiles of column'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         with util.Mask_Printing():
             output, source = self.query(
                 'SELECT QUANTILEs(%s, 5) from %s' % (col, self.tablename), fetch=False)
@@ -216,10 +228,10 @@ class BQDF():
     def unique(self, col=None):
         '''find unique values in the requested column'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         unique_query = "SELECT %s FROM %s GROUP BY %s" % (
             col, self.tablename, col)
-        print unique_query
+        #print unique_query
         with util.Mask_Printing():
             query_response = run_query(self.client, unique_query)
         fields, data = fetch_query(
@@ -236,7 +248,7 @@ class BQDF():
     def hist(self, col=None, bins=20, ax=None):
         '''plots a histogram of the desired column, returns the df used for plotting'''
         if col is None:
-            col=self.active_col
+            col = self.active_col
         binbreaks = self._get_binbreaks(col, bins=bins)
         countstr = _create_sum_str(col, binbreaks)
         querystr = 'SELECT %s FROM %s' % (countstr, self.tablename)
@@ -331,3 +343,25 @@ def _create_sum_str(col, binbreaks):
 
 def _create_case_str(col, minq, maxq, qn):
     return 'SUM(CASE WHEN %s>=%.5f and %s<%.5f THEN 1 ELSE 0 END) as %s' % (col, minq, col, maxq, "_%.0f" % (maxq))
+
+
+def _create_where_statement(*args):
+    operations=['==', '>', '<', '>=', '<=', '!=']
+    wheres=[]
+    for expression in args[0]:
+        for o in operations:
+            try: 
+                output = expression.split(o)
+                operation=o
+                col=output[0].strip()
+                try:
+                    val=float(output[1].strip())
+                except:
+                    val='"%s"' %output[1].strip()
+                wheres.append(_create_single_where(col, val, operation))
+                break
+            except:
+                pass
+    return ' AND '.join(wheres)
+def _create_single_where(key, value, operation):
+    return '%s %s %s' %(key, operation, value)   
