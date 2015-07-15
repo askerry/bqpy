@@ -184,8 +184,8 @@ class Mask_Printing():
 
             def flush(self):
                 pass
-            
-            encoding='ascii'
+
+            encoding = 'ascii'
         self.nullwrite = NullWriter()
         self.proper_stdout = sys.stdout
 

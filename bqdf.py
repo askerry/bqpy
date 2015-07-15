@@ -29,19 +29,28 @@ class BQDF():
         '''initialize a reference to table'''
         self.client = client
         self.tablename = tablename
+        self.remote = tablename
         self.allstring = "SELECT * FROM %s LIMIT 1" % tablename
+        self.local = None
         self.max_rows = max_rows
         self.active_col = None
+        self.columns = self.get_columns()
         for col in self.columns:
             funcstr = "lambda self=self:self.set_active_col('%s')" % col
-            setattr(BQDF, col, property(eval(funcstr)))
+            setattr(BQDF, col, property(eval(funcstr)))  # HACKITY HACK
+        self.local = self.head()
+
+    def __len__(self):
+        return self.size[0]
 
     def query(self, querystr, fetch=True):
         '''execute any arbitary query on the associated table'''
-        return bigquery_query(querystr, self.client, fetch=fetch)
+        output, source = raw_query(self.client, querystr, fetch=fetch)
+        new_bqdf = BQDF(self.client, '[%s]' % util.stringify(source))
+        new_bqdf.local = output
+        return new_bqdf
 
-    @property
-    def columns(self):
+    def get_columns(self):
         '''returns list of column names from table'''
         with util.Mask_Printing():
             query_response = run_query(self.client, self.allstring)
@@ -67,23 +76,29 @@ class BQDF():
     def size(self):
         '''returns size of the table (# rows, # columns)'''
         with util.Mask_Printing():
-            output, source = self.query(
-                "SELECT COUNT(*) from %s" % (self.tablename), fetch=False)
-        return (int(output.values[0][0]), len(self.columns))
+            ndf = self.query(
+                "SELECT COUNT(*) FROM %s" % (self.tablename))
+        return (int(ndf.local.values[0][0]), len(self.columns))
+
+    def head(self):
+        with util.Mask_Printing():
+            output, source = raw_query(
+                self.client, "SELECT * FROM %s LIMIT 5" % (self.tablename))
+        return output
 
     def where(self, *args, **kwargs):
         if 'fetch' in kwargs:
-            fetch=kwargs['fetch']
+            fetch = kwargs['fetch']
         else:
-            fetch=True
+            fetch = True
         filter_query = "SELECT * FROM %s WHERE %s" % (
             self.tablename, _create_where_statement(args))
-        print filter_query
+        # print filter_query
         with util.Mask_Printing():
-            output, source = self.query(filter_query, fetch=fetch)
-        return output, source
+            ndf = self.query(filter_query, fetch=fetch)
+        return ndf
 
-    def groupby(self, groupingcol, operations, max_rows=max_rows):
+    def groupby(self, groupingcol, operations, max_rows=max_rows, fetch=True):
         '''groups data by grouping column and performs requested operations on other columns
         INPUTS:
             groupingcol (str): column to group on
@@ -95,14 +110,12 @@ class BQDF():
                  'min': 'MIN', 'max': 'MAX', 'count': 'COUNT'}
         operationpairs = [
             "%s(%s) %s_%s " % (opmap[val], key, key, val) for (key, val) in operations]
-        grouping_query = "SELECT %s, COUNT(*) count, %s FROM %s GROUP BY %s LIMIT %s" % (
+        grouping_query = "SELECT %s, %s FROM %s GROUP BY %s LIMIT %s" % (
             groupingcol, ', '.join(operationpairs), self.tablename, groupingcol, self.max_rows)
-        print grouping_query
+        # print grouping_query
         with util.Mask_Printing():
-            query_response = run_query(self.client, grouping_query)
-        fields, data = fetch_query(
-            self.client, query_response, start_row=0, max_rows=self.max_rows)
-        return bqresult_2_df(fields, data)
+            ndf = self.query(grouping_query, fetch=fetch)
+        return ndf
 
     def join(self, df2, on=None, left_on=None, right_on=None, how='LEFT', fetch=True):
         '''joins table with table referenced in df2 and optionally returns result'''
@@ -111,10 +124,10 @@ class BQDF():
             right_on = on
         joinstr = "SELECT * FROM %s df1 %s JOIN %s df2 ON df1.%s=df2.%s" % (
             self.tablename, how, df2.tablename, left_on, right_on)
-        print joinstr
+        # print joinstr
         with util.Mask_Printing():
-            output, source = self.query(joinstr, fetch=fetch)
-        return output, source
+            ndf = self.query(joinstr, fetch=fetch)
+        return ndf
 
     def set_active_col(self, col):
         self.active_col = col
@@ -128,81 +141,81 @@ class BQDF():
         if col is None:
             col = self.active_col
         with util.Mask_Printing():
-            output, source = self.query(
+            ndf = self.query(
                 'SELECT COUNT(%s) from %s' % (col, self.tablename), fetch=False)
         self.clear_active_col()
-        return output.values[0][0]
+        return ndf.local.values[0][0]
 
     def min(self, col=None):
         '''return minimum value of column'''
         if col is None:
             col = self.active_col
         with util.Mask_Printing():
-            output, source = self.query(
+            ndf = self.query(
                 'SELECT MIN(%s) from %s' % (col, self.tablename), fetch=False)
         self.clear_active_col()
-        return output.values[0][0]
+        return ndf.local.values[0][0]
 
     def max(self, col=None):
         '''return maximum value of column'''
         if col is None:
             col = self.active_col
         with util.Mask_Printing():
-            output, source = self.query(
+            ndf = self.query(
                 'SELECT MAX(%s) from %s' % (col, self.tablename), fetch=False)
         self.clear_active_col()
-        return output.values[0][0]
+        return ndf.local.values[0][0]
 
     def mean(self, col=None):
         '''return mean of column'''
         if col is None:
             col = self.active_col
         with util.Mask_Printing():
-            output, source = self.query(
+            ndf = self.query(
                 'SELECT AVG(%s) from %s' % (col, self.tablename), fetch=False)
         self.clear_active_col()
-        return output.values[0][0]
+        return ndf.local.values[0][0]
 
     def sum(self, col=None):
         '''return sum of column'''
         if col is None:
             col = self.active_col
         with util.Mask_Printing():
-            output, source = self.query(
+            ndf = self.query(
                 'SELECT SUM(%s) from %s' % (col, self.tablename), fetch=False)
         self.clear_active_col()
-        return output.values[0][0]
+        return ndf.local.values[0][0]
 
     def std(self, col=None):
         '''return standard deviation of column'''
         if col is None:
             col = self.active_col
         with util.Mask_Printing():
-            output, source = self.query(
+            ndf = self.query(
                 'SELECT STDDEV(%s) from %s' % (col, self.tablename), fetch=False)
         self.clear_active_col()
-        return output.values[0][0]
+        return ndf.local.values[0][0]
 
     def mode(self, col=None):
         '''return mode of column (if multiple, returns first listed)'''
         if col is None:
             col = self.active_col
         with util.Mask_Printing():
-            output, source = self.query('SELECT COUNT(%s) as frequency from %s GROUP BY %s ORDER BY frequency DESC' % (
+            ndf = self.query('SELECT COUNT(%s) as frequency from %s GROUP BY %s ORDER BY frequency DESC' % (
                 col, self.tablename, col), fetch=False)
         self.clear_active_col()
-        return output.iloc[0, 0]
+        return ndf.local.iloc[0, 0]
 
     def percentiles(self, col=None):
         '''returns 25th, 50th, and 75t percentiles of column'''
         if col is None:
             col = self.active_col
         with util.Mask_Printing():
-            output, source = self.query(
+            ndf = self.query(
                 'SELECT QUANTILEs(%s, 5) from %s' % (col, self.tablename), fetch=False)
-        perc_25 = output.iloc[1, 0]
-        perc_50 = output.iloc[2, 0]
-        perc_75 = output.iloc[3, 0]
+        perc_25 = ndf.local.iloc[1, 0]
+        perc_50 = ndf.local.iloc[2, 0]
+        perc_75 = ndf.local.iloc[3, 0]
         self.clear_active_col()
         return perc_25, perc_50, perc_75
 
@@ -231,19 +244,17 @@ class BQDF():
             col = self.active_col
         unique_query = "SELECT %s FROM %s GROUP BY %s" % (
             col, self.tablename, col)
-        #print unique_query
+        # print unique_query
         with util.Mask_Printing():
-            query_response = run_query(self.client, unique_query)
-        fields, data = fetch_query(
-            self.client, query_response, start_row=0, max_rows=self.max_rows)
+            ndf = self.query(unique_query)
         self.clear_active_col()
-        return bqresult_2_df(fields, data)[col].values
+        return ndf.local[col].values
 
     def plot(self, grouping_col, value_col, kind='bar'):
         '''plots the mean of value_col (Y), broken down by grouping_col (X) and returns plot axis'''
         plotdf = self.groupby(
             grouping_col, [(value_col, 'mean'), (value_col, 'std'), (value_col, 'count')])
-        return bqviz._plot_grouped_data(plotdf, value_col, grouping_col, kind=kind)
+        return bqviz._plot_grouped_data(plotdf.local, value_col, grouping_col, kind=kind)
 
     def hist(self, col=None, bins=20, ax=None):
         '''plots a histogram of the desired column, returns the df used for plotting'''
@@ -252,9 +263,9 @@ class BQDF():
         binbreaks = self._get_binbreaks(col, bins=bins)
         countstr = _create_sum_str(col, binbreaks)
         querystr = 'SELECT %s FROM %s' % (countstr, self.tablename)
-        df, source = self.query(querystr)
-        freqs = df.T.iloc[:, 0].values
-        labels = ['<' + val[1:] for val in df.T.index.values]
+        ndf = self.query(querystr)
+        freqs = ndf.local.T.iloc[:, 0].values
+        labels = ['<' + val[1:] for val in ndf.local.T.index.values]
         if ax is None:
             f, ax = plt.subplots(figsize=[8, 4])
         ax.bar(range(len(freqs)), freqs)
@@ -262,7 +273,7 @@ class BQDF():
         ax.set_ylabel('frequency')
         ax.set_title("%s histogram" % col)
         self.clear_active_col()
-        return df.T
+        return ndf.local.T
 
     def _get_binbreaks(self, col, bins=20):
         '''computes breakpoints for binning of data in column'''
@@ -276,33 +287,8 @@ class BQDF():
             binbreaks.append(val)
         return binbreaks
 
-
-def bigquery_query(querystr, client, max_rows=max_rows, fetch=True):
-    '''executes a query and returns the results or a result sample as a pandas df
-
-    INPUTS:
-        querystr (str):
-        client (bq.Client): connection client
-        max_rows (int): max number of rows that the client will return in the results
-        fetch (bool): if True, fetch the full resultset locally, otherwise return only a sample of the first 10 rows
-    OUTPUTS:
-        result (pandas datafram): dataframe containing the query results or
-            first 10 rows or resultset (if fetch==False)
-        destinationtable (dict): remote table that contains the query results
-    '''
-    query_response = run_query(client, querystr)
-    if fetch:
-        fields, data = fetch_query(
-            client, query_response, start_row=0, max_rows=max_rows)
-        return bqresult_2_df(fields, data), query_response['configuration']['query']['destinationTable']
-
-    else:
-        fields, data = fetch_query(
-            client, query_response, start_row=0, max_rows=10)
-        head_sample = bqresult_2_df(fields, data)
-        print "query saved to %s" % util.stringify(query_response['configuration']['query']['destinationTable'])
-        print "returning head only"
-        return head_sample, query_response['configuration']['query']['destinationTable']
+    def _log_stats(self):
+        pass
 
 
 def bqresult_2_df(fields, data):
@@ -346,22 +332,51 @@ def _create_case_str(col, minq, maxq, qn):
 
 
 def _create_where_statement(*args):
-    operations=['==', '>', '<', '>=', '<=', '!=']
-    wheres=[]
+    operations = ['==', '>', '<', '>=', '<=', '!=']
+    wheres = []
     for expression in args[0]:
         for o in operations:
-            try: 
+            try:
                 output = expression.split(o)
-                operation=o
-                col=output[0].strip()
+                operation = o
+                col = output[0].strip()
                 try:
-                    val=float(output[1].strip())
+                    val = float(output[1].strip())
                 except:
-                    val='"%s"' %output[1].strip()
+                    val = '"%s"' % output[1].strip()
                 wheres.append(_create_single_where(col, val, operation))
                 break
             except:
                 pass
     return ' AND '.join(wheres)
+
+
 def _create_single_where(key, value, operation):
-    return '%s %s %s' %(key, operation, value)   
+    return '%s %s %s' % (key, operation, value)
+
+
+def raw_query(client, querystr, max_rows=max_rows, fetch=True):
+    '''executes a query and returns the results or a result sample as a pandas df and the destination table as a dict
+
+    INPUTS:
+        querystr (str):
+        max_rows (int): max number of rows that the client will return in the results
+        fetch (bool): if True, fetch the full resultset locally, otherwise return only a sample of the first 10 rows
+    OUTPUTS:
+        result (pandas datafram): dataframe containing the query results or
+            first 10 rows or resultset (if fetch==False)
+        destinationtable (dict): remote table that contains the query results
+    '''
+    query_response = run_query(client, querystr)
+    if fetch:
+        fields, data = fetch_query(
+            client, query_response, start_row=0, max_rows=max_rows)
+        return bqresult_2_df(fields, data), query_response['configuration']['query']['destinationTable']
+
+    else:
+        fields, data = fetch_query(
+            client, query_response, start_row=0, max_rows=10)
+        head_sample = bqresult_2_df(fields, data)
+        print "query saved to %s" % util.stringify(query_response['configuration']['query']['destinationTable'])
+        print "returning head only"
+        return head_sample, query_response['configuration']['query']['destinationTable']
