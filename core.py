@@ -6,8 +6,6 @@ import pandas as pd
 import numpy as np
 import sys
 import os
-import time
-import datetime
 sys.path.append('/Users/amyskerry/google-cloud-sdk/platform/bq')
 import bq
 import matplotlib.pyplot as plt
@@ -35,7 +33,7 @@ def run_query(client, querystr, destination_table=None, dry_run=False):
         print "writing to temporary table %s" % destination_table
     query_response = client.Query(
         querystr, destination_table=destination_table, dry_run=dry_run)
-    _log_query(client, query_response)
+    util._log_query(client, query_response)
     return query_response
 
 
@@ -72,25 +70,3 @@ def bigquery_connect(project_id=None, logging_file=None):
     client.logging_file = logging_file
     return client
 
-
-def _log_query(client, query_response):
-    if client.logging_file is not None:
-        query = query_response['configuration']['query']['query']
-        destination = query_response['configuration'][
-            'query']['destinationTable']
-        date = str(datetime.datetime.fromtimestamp(time.time()))
-        usage_stats = query_response['statistics']
-        cached = str(usage_stats['query']['cacheHit'])
-        jobid = query_response['id']
-        user = query_response['user_email']
-        duration_ms = str((float(usage_stats['endTime']) - float(usage_stats['creationTime'])) / 1000)
-        processed_mb = str(float(usage_stats['totalBytesProcessed']) / 1000000)
-        if not os.path.exists(client.logging_file):
-            header = ','.join(
-                ['date', 'user', 'query', 'destination', 'jobid', 'duration_ms', 'processed_mb', 'cached', '\n'])
-            with open(client.logging_file, 'a') as f:
-                f.write(header)
-        logline = ','.join(
-            [date, user, query, util.stringify(destination), jobid, duration_ms, processed_mb, cached, '\n'])
-        with open(client.logging_file, 'a') as f:
-            f.write(logline)

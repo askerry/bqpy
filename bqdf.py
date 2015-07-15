@@ -38,10 +38,14 @@ class BQDF():
         for col in self.columns:
             funcstr = "lambda self=self:self.set_active_col('%s')" % col
             setattr(BQDF, col, property(eval(funcstr)))  # HACKITY HACK
-        self.local = self.head()
+        self.local = self._head()
 
     def __len__(self):
         return self.size[0]
+
+    def __getitem__(self, col):
+        self.set_active_col(col)
+        return self
 
     def query(self, querystr, fetch=True):
         '''execute any arbitary query on the associated table'''
@@ -49,6 +53,15 @@ class BQDF():
         new_bqdf = BQDF(self.client, '[%s]' % util.stringify(source))
         new_bqdf.local = output
         return new_bqdf
+
+    @property
+    def values(self, col=None):
+        if col is None:
+            col = self.active_col
+        with util.Mask_Printing():
+            output, source = raw_query(
+                self.client, "SELECT %s FROM %s" % (col, self.tablename))
+        return output[col].values
 
     def get_columns(self):
         '''returns list of column names from table'''
@@ -80,11 +93,14 @@ class BQDF():
                 "SELECT COUNT(*) FROM %s" % (self.tablename))
         return (int(ndf.local.values[0][0]), len(self.columns))
 
-    def head(self):
+    def _head(self):
         with util.Mask_Printing():
             output, source = raw_query(
                 self.client, "SELECT * FROM %s LIMIT 5" % (self.tablename))
         return output
+
+    def head(self):
+        return self.local
 
     def where(self, *args, **kwargs):
         if 'fetch' in kwargs:
@@ -93,7 +109,6 @@ class BQDF():
             fetch = True
         filter_query = "SELECT * FROM %s WHERE %s" % (
             self.tablename, _create_where_statement(args))
-        # print filter_query
         with util.Mask_Printing():
             ndf = self.query(filter_query, fetch=fetch)
         return ndf
@@ -112,7 +127,6 @@ class BQDF():
             "%s(%s) %s_%s " % (opmap[val], key, key, val) for (key, val) in operations]
         grouping_query = "SELECT %s, %s FROM %s GROUP BY %s LIMIT %s" % (
             groupingcol, ', '.join(operationpairs), self.tablename, groupingcol, self.max_rows)
-        # print grouping_query
         with util.Mask_Printing():
             ndf = self.query(grouping_query, fetch=fetch)
         return ndf
@@ -122,11 +136,10 @@ class BQDF():
         if left_on is None:
             left_on = on
             right_on = on
-        joinstr = "SELECT * FROM %s df1 %s JOIN %s df2 ON df1.%s=df2.%s" % (
+        join_query = "SELECT * FROM %s df1 %s JOIN %s df2 ON df1.%s=df2.%s" % (
             self.tablename, how, df2.tablename, left_on, right_on)
-        # print joinstr
         with util.Mask_Printing():
-            ndf = self.query(joinstr, fetch=fetch)
+            ndf = self.query(join_query, fetch=fetch)
         return ndf
 
     def set_active_col(self, col):
@@ -136,65 +149,38 @@ class BQDF():
     def clear_active_col(self):
         self.active_col = None
 
-    def count(self, col=None):
-        '''return count of non-null entries in column'''
+    def _simple_agg(self, col=None, operator='COUNT'):
         if col is None:
             col = self.active_col
         with util.Mask_Printing():
             ndf = self.query(
-                'SELECT COUNT(%s) from %s' % (col, self.tablename), fetch=False)
+                'SELECT %s(%s) from %s' % (operator, col, self.tablename), fetch=False)
         self.clear_active_col()
         return ndf.local.values[0][0]
+
+    def count(self, col=None):
+        '''return count of non-null entries in column'''
+        return self._simple_agg(col=col, operator='COUNT')
 
     def min(self, col=None):
         '''return minimum value of column'''
-        if col is None:
-            col = self.active_col
-        with util.Mask_Printing():
-            ndf = self.query(
-                'SELECT MIN(%s) from %s' % (col, self.tablename), fetch=False)
-        self.clear_active_col()
-        return ndf.local.values[0][0]
+        return self._simple_agg(col=col, operator='MIN')
 
     def max(self, col=None):
         '''return maximum value of column'''
-        if col is None:
-            col = self.active_col
-        with util.Mask_Printing():
-            ndf = self.query(
-                'SELECT MAX(%s) from %s' % (col, self.tablename), fetch=False)
-        self.clear_active_col()
-        return ndf.local.values[0][0]
+        return self._simple_agg(col=col, operator='MAX')
 
     def mean(self, col=None):
         '''return mean of column'''
-        if col is None:
-            col = self.active_col
-        with util.Mask_Printing():
-            ndf = self.query(
-                'SELECT AVG(%s) from %s' % (col, self.tablename), fetch=False)
-        self.clear_active_col()
-        return ndf.local.values[0][0]
+        return self._simple_agg(col=col, operator='AVG')
 
     def sum(self, col=None):
         '''return sum of column'''
-        if col is None:
-            col = self.active_col
-        with util.Mask_Printing():
-            ndf = self.query(
-                'SELECT SUM(%s) from %s' % (col, self.tablename), fetch=False)
-        self.clear_active_col()
-        return ndf.local.values[0][0]
+        return self._simple_agg(col=col, operator='SUM')
 
     def std(self, col=None):
         '''return standard deviation of column'''
-        if col is None:
-            col = self.active_col
-        with util.Mask_Printing():
-            ndf = self.query(
-                'SELECT STDDEV(%s) from %s' % (col, self.tablename), fetch=False)
-        self.clear_active_col()
-        return ndf.local.values[0][0]
+        return self._simple_agg(col=col, operator='STDDEV')
 
     def mode(self, col=None):
         '''return mode of column (if multiple, returns first listed)'''
@@ -244,7 +230,6 @@ class BQDF():
             col = self.active_col
         unique_query = "SELECT %s FROM %s GROUP BY %s" % (
             col, self.tablename, col)
-        # print unique_query
         with util.Mask_Printing():
             ndf = self.query(unique_query)
         self.clear_active_col()
@@ -261,19 +246,35 @@ class BQDF():
         if col is None:
             col = self.active_col
         binbreaks = self._get_binbreaks(col, bins=bins)
-        countstr = _create_sum_str(col, binbreaks)
+        countstr = _create_full_str(col, binbreaks, kind='count')
         querystr = 'SELECT %s FROM %s' % (countstr, self.tablename)
         ndf = self.query(querystr)
-        freqs = ndf.local.T.iloc[:, 0].values
-        labels = ['<' + val[1:] for val in ndf.local.T.index.values]
-        if ax is None:
-            f, ax = plt.subplots(figsize=[8, 4])
-        ax.bar(range(len(freqs)), freqs)
-        ax.set_xticklabels(labels, rotation=90)
-        ax.set_ylabel('frequency')
-        ax.set_title("%s histogram" % col)
+        bqviz.plot_hist(ndf.local, col, ax=ax)
         self.clear_active_col()
         return ndf.local.T
+
+    def scatter(self, x=None, y=None, bins=200, ax=None):
+        '''plots a scatter plot of x vs y (downsampled if data.size>bins, returns the series used for plotting'''
+        if self.__len__()>bins:
+            binbreaks = self._get_binbreaks(x, bins=bins)
+            meanstr = _create_full_str(x, binbreaks, kind='mean', ycol=y)
+            stdstr = _create_full_str(x, binbreaks, kind='std', ycol=y)
+            countstr = _create_full_str(x, binbreaks, kind='count', ycol=y)
+            querystr = 'SELECT %s FROM %s' % (meanstr, self.tablename)
+            scatterdf = self.query(querystr)
+            errorstr = 'SELECT %s FROM %s' % (stdstr, self.tablename)
+            error= self.query(errorstr).local.T[0]
+            countstr = 'SELECT %s FROM %s' % (countstr, self.tablename)
+            counts= self.query(countstr).local.T[0]
+            sems=[s/np.sqrt(c) for s,c in zip(error,counts)]
+            plotdf=bqviz.plot_scatter(scatterdf.local, x, y, ax=ax, downsampled=True, error=sems, counts=counts)
+        else:
+            querystr = 'SELECT %s, %s FROM %s' % (x, y, self.tablename)
+            scatterdf = self.query(querystr)
+            plotdf=bqviz.plot_scatter(scatterdf.local, x, y, ax=ax, downsampled=False)
+        self.clear_active_col()
+        return plotdf
+
 
     def _get_binbreaks(self, col, bins=20):
         '''computes breakpoints for binning of data in column'''
@@ -286,9 +287,6 @@ class BQDF():
             val = val + interval
             binbreaks.append(val)
         return binbreaks
-
-    def _log_stats(self):
-        pass
 
 
 def bqresult_2_df(fields, data):
@@ -317,18 +315,32 @@ def bqresult_2_df(fields, data):
     return df
 
 
-def _create_sum_str(col, binbreaks):
+def _create_full_str(col, binbreaks, kind='count', ycol=None):
     '''creates string for conditional counting based on binbreaks'''
-    sumstrs = []
+    fullstrs = []
     for qn, q in enumerate(binbreaks[:-1]):
         minq = q
         maxq = binbreaks[qn + 1]
-        sumstrs.append(_create_case_str(col, minq, maxq, qn))
-    return ', '.join(sumstrs)
+        if kind=='count':
+            fullstrs.append(_create_case_str_count(col, minq, maxq, qn))
+        elif kind=='mean':
+            fullstrs.append(_create_case_str_mean(col, ycol, minq, maxq, qn))
+        elif kind=='std':
+            fullstrs.append(_create_case_str_std(col, ycol, minq, maxq, qn))
+            
+    return ', '.join(fullstrs)
 
 
-def _create_case_str(col, minq, maxq, qn):
+
+def _create_case_str_count(col, minq, maxq, qn):
     return 'SUM(CASE WHEN %s>=%.5f and %s<%.5f THEN 1 ELSE 0 END) as %s' % (col, minq, col, maxq, "_%.0f" % (maxq))
+
+
+def _create_case_str_mean(xcol, ycol, minq, maxq, qn):
+    return 'AVG(CASE WHEN %s>=%.5f and %s<%.5f THEN %s ELSE NULL END) as %s' % (xcol, minq, xcol, maxq, ycol, "_%.0f" % ((minq + maxq) / 2))
+
+def _create_case_str_std(xcol, ycol, minq, maxq, qn):
+    return 'STDDEV(CASE WHEN %s>=%.5f and %s<%.5f THEN %s ELSE NULL END) as %s' % (xcol, minq, xcol, maxq, ycol, "_%.0f" % ((minq + maxq) / 2))
 
 
 def _create_where_statement(*args):

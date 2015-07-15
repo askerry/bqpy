@@ -1,12 +1,15 @@
 ''' pybq.util: basic api client utility functions
 
-modeled after bigquery documentation
+some modeled after bigquery documentation
 - https://cloud.google.com/bigquery/docs/managing_jobs_datasets_projects
 - https://cloud.google.com/bigquery/docs/tables
 '''
 
 
 import sys
+import time
+import datetime
+import os
 sys.path.append('/Users/amyskerry/google-cloud-sdk/platform/bq')
 from bq import apiclient
 from apiclient import googleapiclient, oauth2client
@@ -15,6 +18,30 @@ import oauth2client.client
 from googleapiclient.discovery import build
 from oauth2client.client import GoogleCredentials
 import pprint
+
+
+def _log_query(client, query_response):
+    if client.logging_file is not None:
+        query = query_response['configuration']['query']['query']
+        destination = query_response['configuration'][
+            'query']['destinationTable']
+        date = str(datetime.datetime.fromtimestamp(time.time()))
+        usage_stats = query_response['statistics']
+        cached = str(usage_stats['query']['cacheHit'])
+        jobid = query_response['id']
+        user = query_response['user_email']
+        duration_ms = str((float(usage_stats['endTime']) - float(usage_stats['creationTime'])) / 1000)
+        processed_mb = str(float(usage_stats['totalBytesProcessed']) / 1000000)
+        if not os.path.exists(client.logging_file):
+            header = '|'.join(
+                ['date', 'user', 'query', 'destination', 'jobid', 'duration_ms', 'processed_mb', 'cached', '\n'])
+            with open(client.logging_file, 'a') as f:
+                f.write(header)
+        logline = '|'.join(
+            [date, user, query, stringify(destination), jobid, duration_ms, processed_mb, cached, '\n'])
+        with open(client.logging_file, 'a') as f:
+            f.write(logline)
+
 
 
 def get_service():
