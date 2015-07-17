@@ -18,6 +18,8 @@ import oauth2client.client
 from googleapiclient.discovery import build
 from oauth2client.client import GoogleCredentials
 import pprint
+import types
+import cfg
 
 
 def _log_query(client, query_response):
@@ -30,7 +32,8 @@ def _log_query(client, query_response):
         cached = str(usage_stats['query']['cacheHit'])
         jobid = query_response['id']
         user = query_response['user_email']
-        duration_ms = str((float(usage_stats['endTime']) - float(usage_stats['creationTime'])) / 1000)
+        duration_ms = str(
+            (float(usage_stats['endTime']) - float(usage_stats['creationTime'])) / 1000)
         processed_mb = str(float(usage_stats['totalBytesProcessed']) / 1000000)
         if not os.path.exists(client.logging_file):
             header = '|'.join(
@@ -43,6 +46,12 @@ def _log_query(client, query_response):
             f.write(logline)
 
 
+def _monkey_patch_to_instance(function, instance):
+    '''add method to existing class'''
+    method = types.MethodType(function, instance)
+    setattr(instance, function.__name__, method)
+    return instance
+
 
 def get_service():
     """returns an initialized and authorized bigquery client"""
@@ -53,7 +62,7 @@ def get_service():
     return build('bigquery', 'v2', credentials=credentials)
 
 
-def list_projects(service):
+def list_projects(self):
     """list projects associated with the service
 
     INPUTS:
@@ -62,7 +71,7 @@ def list_projects(service):
         projectids (list): list of projectids associated with the service
     """
     try:
-        projects = service.projects()
+        projects = self.service.projects()
         list_reply = projects.list().execute()
         projectids = []
         if 'projects' in list_reply:
@@ -78,7 +87,7 @@ def list_projects(service):
         print 'Error in list_projects:', pprint.pprint(err.content)
 
 
-def list_datasets(service, project):
+def list_datasets(project):
     """list datasets associated with the project
 
     INPUTS:
@@ -88,7 +97,7 @@ def list_datasets(service, project):
         datasetids (list): list of datasetids associated with the project
     """
     try:
-        datasets = service.datasets()
+        datasets = self.service.datasets()
         list_reply = datasets.list(projectId=project).execute()
         datasetids = []
         if 'datasets' in list_reply:
@@ -105,7 +114,7 @@ def list_datasets(service, project):
         print 'Error in list_datasets:', pprint.pprint(err.content)
 
 
-def list_tables(service, project, dataset):
+def list_tables(project, dataset):
     """list tables associated with the dataset
 
     INPUTS:
@@ -116,7 +125,7 @@ def list_tables(service, project, dataset):
         tableids (list): list of tableids associated with the project
     """
     try:
-        tables = service.tables()
+        tables = self.service.tables()
         list_reply = tables.list(
             projectId=project, datasetId=dataset).execute()
         tableids = []
@@ -133,63 +142,11 @@ def list_tables(service, project, dataset):
         print 'Error in list_tables:', pprint.pprint(err.content)
 
 
-def delete_table(service, projectid, datasetid, tableid):
+def delete_table(projectid, datasetid, tableid):
     """deletes specified table"""
-    service.tables().delete(projectId=projectid,
-                            datasetId=datasetid,
-                            tableId=tableid).execute()
-
-
-def copy_table(service, source=None, target=None):
-    """copies table from source to target
-
-    INPUTS:
-        source (dict): dictionary specifying cp source (keys: 'projectId', 'datasetId', 'tableId')
-        target (dict): dictionary specifying cp target (keys: 'projectId', 'datasetId', 'tableId')
-    """
-    try:
-        jobCollection = service.jobs()
-        jobData = {
-            "projectId": sourceProjectId,
-            "configuration": {
-                "copy": {
-                    "sourceTable": {
-                        "projectId": source['projectId'],
-                        "datasetId": source['datasetId'],
-                        "tableId": source['tableId'],
-                    },
-                    "destinationTable": {
-                        "projectId": target['projectId'],
-                        "datasetId": target['datasetId'],
-                        "tableId": target['tableId'],
-                    },
-                    "createDisposition": "CREATE_IF_NEEDED",
-                    "writeDisposition": "WRITE_TRUNCATE"
-                }
-            }
-        }
-
-        insertResponse = jobCollection.insert(
-            projectId=targetProjectId, body=jobData).execute()
-        # Ping for status until it is done, with a short pause between calls.
-        import time
-        while True:
-            status = jobCollection.get(projectId=target['projectId'],
-                                       jobId=insertResponse['jobReference']['jobId']).execute()
-            if 'DONE' == status['status']['state']:
-                break
-            print 'Waiting for the import to complete...'
-            time.sleep(10)
-        if 'errors' in status['status']:
-            print 'Error loading table: ', pprint.pprint(status)
-            return
-        print 'Loaded the table:', pprint.pprint(status)  # !!!!!!!!!!
-        # Now query and print out the generated results table.
-        queryTableData(
-            service, target['projectid'], target['datasetid'], target['tableid'])
-
-    except apiclient.errors.HttpError as err:
-        print 'Error in loadTable: ', pprint.pprint(err.resp)
+    self.service.tables().delete(projectId=projectid,
+                                 datasetId=datasetid,
+                                 tableId=tableid).execute()
 
 
 class Mask_Printing():
@@ -218,11 +175,13 @@ class Mask_Printing():
 
     def __enter__(self):
         '''when entering the context, change sys.stdout to print nothing'''
-        sys.stdout = self.nullwrite
+        if not cfg.DEBUG:
+            sys.stdout = self.nullwrite
 
     def __exit__(self, type, value, traceback):
         '''when exiting the context, restore default stdout'''
-        sys.stdout = self.proper_stdout
+        if not cfg.DEBUG:
+            sys.stdout = self.proper_stdout
 
 
 def stringify(tabledict):

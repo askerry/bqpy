@@ -14,9 +14,10 @@ import bq
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
-from core import run_query, fetch_query, bigquery_connect, max_rows
+from core import run_query, fetch_query, bigquery_connect
 import util
 import bqviz
+import cfg
 
 
 class BQDF():
@@ -25,7 +26,7 @@ class BQDF():
     to basic features of the table. Aims to replicate some of the basic functionality
     of pandas dataframe operations and interfacing for return data in df form'''
 
-    def __init__(self, client, tablename, max_rows=max_rows):
+    def __init__(self, client, tablename, max_rows=cfg.MAX_ROWS):
         '''initialize a reference to table'''
         self.client = client
         self.tablename = tablename
@@ -35,17 +36,20 @@ class BQDF():
         self.max_rows = max_rows
         self.active_col = None
         self.columns = self.get_columns()
-        for col in self.columns:
-            funcstr = "lambda self=self:self.set_active_col('%s')" % col
-            setattr(BQDF, col, property(eval(funcstr)))  # HACKITY HACK
+        # for col in self.columns:
+        #     funcstr = "lambda self=self:self.set_active_col('%s')" % col
+        #     setattr(BQDF, col, property(eval(funcstr)))  # HACKITY HACK
         self.local = self._head()
 
     def __len__(self):
         return self.size[0]
 
-    def __getitem__(self, col):
-        self.set_active_col(col)
-        return self
+    def __getitem__(self, index):
+        if isinstance(index, list):
+            return self._limit_columns(index)
+        else:
+            self.set_active_col(index)
+            return self
 
     def query(self, querystr, fetch=True):
         '''execute any arbitary query on the associated table'''
@@ -113,7 +117,7 @@ class BQDF():
             ndf = self.query(filter_query, fetch=fetch)
         return ndf
 
-    def groupby(self, groupingcol, operations, max_rows=max_rows, fetch=True):
+    def groupby(self, groupingcol, operations, max_rows=cfg.MAX_ROWS, fetch=True):
         '''groups data by grouping column and performs requested operations on other columns
         INPUTS:
             groupingcol (str): column to group on
@@ -148,6 +152,13 @@ class BQDF():
 
     def clear_active_col(self):
         self.active_col = None
+
+    def _limit_columns(self, columns, fetch=True):
+        limit_query = "SELECT %s  FROM %s" % (
+            ', '.join(columns), self.tablename)
+        with util.Mask_Printing():
+            ndf = self.query(limit_query, fetch=fetch)
+        return ndf
 
     def _simple_agg(self, col=None, operator='COUNT'):
         if col is None:
@@ -255,7 +266,7 @@ class BQDF():
 
     def scatter(self, x=None, y=None, bins=200, ax=None):
         '''plots a scatter plot of x vs y (downsampled if data.size>bins, returns the series used for plotting'''
-        if self.__len__()>bins:
+        if self.__len__() > bins:
             binbreaks = self._get_binbreaks(x, bins=bins)
             meanstr = _create_full_str(x, binbreaks, kind='mean', ycol=y)
             stdstr = _create_full_str(x, binbreaks, kind='std', ycol=y)
@@ -263,18 +274,19 @@ class BQDF():
             querystr = 'SELECT %s FROM %s' % (meanstr, self.tablename)
             scatterdf = self.query(querystr)
             errorstr = 'SELECT %s FROM %s' % (stdstr, self.tablename)
-            error= self.query(errorstr).local.T[0]
+            error = self.query(errorstr).local.T[0]
             countstr = 'SELECT %s FROM %s' % (countstr, self.tablename)
-            counts= self.query(countstr).local.T[0]
-            sems=[s/np.sqrt(c) for s,c in zip(error,counts)]
-            plotdf=bqviz.plot_scatter(scatterdf.local, x, y, ax=ax, downsampled=True, error=sems, counts=counts)
+            counts = self.query(countstr).local.T[0]
+            sems = [s / np.sqrt(c) for s, c in zip(error, counts)]
+            plotdf = bqviz.plot_scatter(
+                scatterdf.local, x, y, ax=ax, downsampled=True, error=sems, counts=counts)
         else:
             querystr = 'SELECT %s, %s FROM %s' % (x, y, self.tablename)
             scatterdf = self.query(querystr)
-            plotdf=bqviz.plot_scatter(scatterdf.local, x, y, ax=ax, downsampled=False)
+            plotdf = bqviz.plot_scatter(
+                scatterdf.local, x, y, ax=ax, downsampled=False)
         self.clear_active_col()
         return plotdf
-
 
     def _get_binbreaks(self, col, bins=20):
         '''computes breakpoints for binning of data in column'''
@@ -321,15 +333,14 @@ def _create_full_str(col, binbreaks, kind='count', ycol=None):
     for qn, q in enumerate(binbreaks[:-1]):
         minq = q
         maxq = binbreaks[qn + 1]
-        if kind=='count':
+        if kind == 'count':
             fullstrs.append(_create_case_str_count(col, minq, maxq, qn))
-        elif kind=='mean':
+        elif kind == 'mean':
             fullstrs.append(_create_case_str_mean(col, ycol, minq, maxq, qn))
-        elif kind=='std':
+        elif kind == 'std':
             fullstrs.append(_create_case_str_std(col, ycol, minq, maxq, qn))
-            
-    return ', '.join(fullstrs)
 
+    return ', '.join(fullstrs)
 
 
 def _create_case_str_count(col, minq, maxq, qn):
@@ -338,6 +349,7 @@ def _create_case_str_count(col, minq, maxq, qn):
 
 def _create_case_str_mean(xcol, ycol, minq, maxq, qn):
     return 'AVG(CASE WHEN %s>=%.5f and %s<%.5f THEN %s ELSE NULL END) as %s' % (xcol, minq, xcol, maxq, ycol, "_%.0f" % ((minq + maxq) / 2))
+
 
 def _create_case_str_std(xcol, ycol, minq, maxq, qn):
     return 'STDDEV(CASE WHEN %s>=%.5f and %s<%.5f THEN %s ELSE NULL END) as %s' % (xcol, minq, xcol, maxq, ycol, "_%.0f" % ((minq + maxq) / 2))
@@ -367,7 +379,7 @@ def _create_single_where(key, value, operation):
     return '%s %s %s' % (key, operation, value)
 
 
-def raw_query(client, querystr, max_rows=max_rows, fetch=True):
+def raw_query(client, querystr, max_rows=cfg.MAX_ROWS, fetch=True):
     '''executes a query and returns the results or a result sample as a pandas df and the destination table as a dict
 
     INPUTS:
@@ -379,16 +391,28 @@ def raw_query(client, querystr, max_rows=max_rows, fetch=True):
             first 10 rows or resultset (if fetch==False)
         destinationtable (dict): remote table that contains the query results
     '''
-    query_response = run_query(client, querystr)
-    if fetch:
-        fields, data = fetch_query(
-            client, query_response, start_row=0, max_rows=max_rows)
-        return bqresult_2_df(fields, data), query_response['configuration']['query']['destinationTable']
+    exists = client.check_query(querystr, fetch)
+    if not exists:
+        query_response = run_query(client, querystr)
+        if fetch:
+            fields, data = fetch_query(
+                client, query_response, start_row=0, max_rows=max_rows)
+            df, source = bqresult_2_df(fields, data), query_response[
+                'configuration']['query']['destinationTable']
+            client.cache_query(querystr, df, source, fetch)
+            client.log_query(querystr)
+            return df, source
 
+        else:
+            fields, data = fetch_query(
+                client, query_response, start_row=0, max_rows=10)
+            head_sample = bqresult_2_df(fields, data)
+            print "query saved to %s" % util.stringify(query_response['configuration']['query']['destinationTable'])
+            print "returning head only"
+            df, source = head_sample, query_response[
+                'configuration']['query']['destinationTable']
+            client.cache_query(querystr, df, source, fetch)
+            client.log_query(querystr)
+            return df, source
     else:
-        fields, data = fetch_query(
-            client, query_response, start_row=0, max_rows=10)
-        head_sample = bqresult_2_df(fields, data)
-        print "query saved to %s" % util.stringify(query_response['configuration']['query']['destinationTable'])
-        print "returning head only"
-        return head_sample, query_response['configuration']['query']['destinationTable']
+        return client.fetch_from_cache(querystr)

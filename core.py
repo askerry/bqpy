@@ -6,14 +6,16 @@ import pandas as pd
 import numpy as np
 import sys
 import os
+import datetime
+import time
+from pympler.asizeof import asizeof
 sys.path.append('/Users/amyskerry/google-cloud-sdk/platform/bq')
 import bq
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
 import util
-
-max_rows = 10000000  # max rows to ever return locally
+import cfg
 
 
 def run_query(client, querystr, destination_table=None, dry_run=False):
@@ -37,7 +39,7 @@ def run_query(client, querystr, destination_table=None, dry_run=False):
     return query_response
 
 
-def fetch_query(client, query_response, start_row=0, max_rows=max_rows):
+def fetch_query(client, query_response, start_row=0, max_rows=cfg.MAX_ROWS):
     '''fetches the results specified in the query response and returns them locally
 
     INPUTS:
@@ -56,7 +58,7 @@ def fetch_query(client, query_response, start_row=0, max_rows=max_rows):
     return fields, data
 
 
-def bigquery_connect(project_id=None, logging_file=None):
+def bigquery_connect(project_id=None, logging_file=None, cache_max=None):
     '''connects to a bigquery client for the provided project_id
 
     INPUTS:
@@ -68,5 +70,42 @@ def bigquery_connect(project_id=None, logging_file=None):
     client = bq.Client.Get()
     client.project_id = project_id
     client.logging_file = logging_file
-    return client
+    client.querycache = {}
+    client.querylog = {}
+    if cache_max is None:
+        client.cache_max = cfg.CACHE_MAX
+    else:
+        client.cache_max = cache_max
 
+    def update(self):
+        self.flush_cache()
+
+    def _cache_query(self, querystr, df, source, fetch):
+        if self.cache_max > 0:
+            i = 0
+            while float(asizeof(self.querycache)) / 1048576 >= self.cache_max:
+                del self.querycache[self.querycache.keys()[i]]
+                i += 1
+                self.querycache[querystr] = {}
+                self.querycache[querystr]['local'] = df
+                self.querycache[querystr]['source'] = source
+                self.querycache[querystr]['fetched'] = fetch
+                self.service = util.get_service()
+
+    def _log_query(self, querystr):
+        timestamp = str(datetime.datetime.fromtimestamp(time.time()))
+        self.querylog[timestamp] = querystr
+
+    def flush_cache(self):
+        self.querycache = {}
+
+    def _check_query(self, querystr, fetch):
+        return querystr in self.querycache and self.querycache[querystr]['fetched'] == fetch
+
+    def _fetch_from_cache(self, querystr):
+        print "fetching from local cache"
+        return self.querycache[querystr]['local'], self.querycache[querystr]['source']
+
+    for func in [update, _cache_query, _log_query, _flush_cache, _check_query, _fetch_from_cache, util.list_projects, util.list_datasets, util.list_tables, util.delete_table]:
+        client = util._monkey_patch_to_instance(func, client)
+    return client
