@@ -14,7 +14,7 @@ import bq
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
-from core import run_query, fetch_query, bigquery_connect
+from core import run_query, fetch_query, Connection
 import util
 import bqviz
 import cfg
@@ -26,12 +26,12 @@ class BQDF():
     to basic features of the table. Aims to replicate some of the basic functionality
     of pandas dataframe operations and interfacing for return data in df form'''
 
-    def __init__(self, client, tablename, max_rows=cfg.MAX_ROWS):
+    def __init__(self, con, tablename, max_rows=cfg.MAX_ROWS):
         '''initialize a reference to table'''
-        self.client = client
-        self.tablename = tablename
+        self.con = con
+        self.tablename = '[%s]' % tablename
         self.remote = tablename
-        self.allstring = "SELECT * FROM %s LIMIT 1" % tablename
+        self.allstring = "SELECT * FROM [%s] LIMIT 1" % tablename
         self.local = None
         self.max_rows = max_rows
         self.active_col = None
@@ -51,10 +51,10 @@ class BQDF():
             self.set_active_col(index)
             return self
 
-    def query(self, querystr, fetch=True):
+    def query(self, querystr, fetch=True, dest=None):
         '''execute any arbitary query on the associated table'''
-        output, source = raw_query(self.client, querystr, fetch=fetch)
-        new_bqdf = BQDF(self.client, '[%s]' % util.stringify(source))
+        output, source = raw_query(self.con, querystr, dest=dest, fetch=fetch)
+        new_bqdf = BQDF(self.con, '%s' % util.stringify(source))
         new_bqdf.local = output
         return new_bqdf
 
@@ -64,24 +64,24 @@ class BQDF():
             col = self.active_col
         with util.Mask_Printing():
             output, source = raw_query(
-                self.client, "SELECT %s FROM %s" % (col, self.tablename))
+                self.con, "SELECT %s FROM %s" % (col, self.tablename))
         return output[col].values
 
     def get_columns(self):
         '''returns list of column names from table'''
         with util.Mask_Printing():
-            query_response = run_query(self.client, self.allstring)
+            query_response = run_query(self.con, self.allstring)
         fields, data = fetch_query(
-            self.client, query_response, start_row=0, max_rows=1)
+            self.con, query_response, start_row=0, max_rows=1)
         return [field['name'] for field in fields]
 
     @property
     def table_schema(self):
         '''prints datatypes and other settings for each column'''
         with util.Mask_Printing():
-            query_response = run_query(self.client, self.allstring)
+            query_response = run_query(self.con, self.allstring)
         fields, data = fetch_query(
-            self.client, query_response, start_row=0, max_rows=1)
+            self.con, query_response, start_row=0, max_rows=1)
         print "Table Schema for %s" % self.tablename
         for f in fields:
             others = [
@@ -100,7 +100,7 @@ class BQDF():
     def _head(self):
         with util.Mask_Printing():
             output, source = raw_query(
-                self.client, "SELECT * FROM %s LIMIT 5" % (self.tablename))
+                self.con, "SELECT * FROM %s LIMIT 5" % (self.tablename))
         return output
 
     def head(self):
@@ -111,13 +111,17 @@ class BQDF():
             fetch = kwargs['fetch']
         else:
             fetch = True
+        if 'dest' in kwargs:
+            dest = kwargs['dest']
+        else:
+            dest = None
         filter_query = "SELECT * FROM %s WHERE %s" % (
             self.tablename, _create_where_statement(args))
         with util.Mask_Printing():
-            ndf = self.query(filter_query, fetch=fetch)
+            ndf = self.query(filter_query, fetch=fetch, dest=dest)
         return ndf
 
-    def groupby(self, groupingcol, operations, max_rows=cfg.MAX_ROWS, fetch=True):
+    def groupby(self, groupingcol, operations, max_rows=cfg.MAX_ROWS, fetch=True, dest=None):
         '''groups data by grouping column and performs requested operations on other columns
         INPUTS:
             groupingcol (str): column to group on
@@ -132,10 +136,10 @@ class BQDF():
         grouping_query = "SELECT %s, %s FROM %s GROUP BY %s LIMIT %s" % (
             groupingcol, ', '.join(operationpairs), self.tablename, groupingcol, self.max_rows)
         with util.Mask_Printing():
-            ndf = self.query(grouping_query, fetch=fetch)
+            ndf = self.query(grouping_query, fetch=fetch, dest=dest)
         return ndf
 
-    def join(self, df2, on=None, left_on=None, right_on=None, how='LEFT', fetch=True):
+    def join(self, df2, on=None, left_on=None, right_on=None, how='LEFT', fetch=True, dest=None):
         '''joins table with table referenced in df2 and optionally returns result'''
         if left_on is None:
             left_on = on
@@ -143,7 +147,7 @@ class BQDF():
         join_query = "SELECT * FROM %s df1 %s JOIN %s df2 ON df1.%s=df2.%s" % (
             self.tablename, how, df2.tablename, left_on, right_on)
         with util.Mask_Printing():
-            ndf = self.query(join_query, fetch=fetch)
+            ndf = self.query(join_query, fetch=fetch, dest=dest)
         return ndf
 
     def set_active_col(self, col):
@@ -153,11 +157,11 @@ class BQDF():
     def clear_active_col(self):
         self.active_col = None
 
-    def _limit_columns(self, columns, fetch=True):
+    def _limit_columns(self, columns, fetch=True, dest=None):
         limit_query = "SELECT %s  FROM %s" % (
             ', '.join(columns), self.tablename)
         with util.Mask_Printing():
-            ndf = self.query(limit_query, fetch=fetch)
+            ndf = self.query(limit_query, fetch=fetch, dest=dest)
         return ndf
 
     def _simple_agg(self, col=None, operator='COUNT'):
@@ -379,40 +383,41 @@ def _create_single_where(key, value, operation):
     return '%s %s %s' % (key, operation, value)
 
 
-def raw_query(client, querystr, max_rows=cfg.MAX_ROWS, fetch=True):
+def raw_query(con, querystr, dest=None, max_rows=cfg.MAX_ROWS, fetch=True):
     '''executes a query and returns the results or a result sample as a pandas df and the destination table as a dict
 
     INPUTS:
         querystr (str):
-        max_rows (int): max number of rows that the client will return in the results
+        dest (dict): specify destination table for output of query (if None, BQ creates a temporary (24hr) table)
+        max_rows (int): max number of rows that the con will return in the results
         fetch (bool): if True, fetch the full resultset locally, otherwise return only a sample of the first 10 rows
     OUTPUTS:
         result (pandas datafram): dataframe containing the query results or
             first 10 rows or resultset (if fetch==False)
         destinationtable (dict): remote table that contains the query results
     '''
-    exists = client.check_query(querystr, fetch)
+    exists = con._check_query(querystr, fetch)
     if not exists:
-        query_response = run_query(client, querystr)
+        query_response = run_query(con, querystr, destination_table=dest)
         if fetch:
             fields, data = fetch_query(
-                client, query_response, start_row=0, max_rows=max_rows)
+                con, query_response, start_row=0, max_rows=max_rows)
             df, source = bqresult_2_df(fields, data), query_response[
                 'configuration']['query']['destinationTable']
-            client.cache_query(querystr, df, source, fetch)
-            client.log_query(querystr)
+            con._cache_query(querystr, df, source, fetch)
+            con._log_query(querystr)
             return df, source
 
         else:
             fields, data = fetch_query(
-                client, query_response, start_row=0, max_rows=10)
+                con, query_response, start_row=0, max_rows=10)
             head_sample = bqresult_2_df(fields, data)
             print "query saved to %s" % util.stringify(query_response['configuration']['query']['destinationTable'])
             print "returning head only"
             df, source = head_sample, query_response[
                 'configuration']['query']['destinationTable']
-            client.cache_query(querystr, df, source, fetch)
-            client.log_query(querystr)
+            con._cache_query(querystr, df, source, fetch)
+            con._log_query(querystr)
             return df, source
     else:
-        return client.fetch_from_cache(querystr)
+        return con._fetch_from_cache(querystr)

@@ -11,14 +11,6 @@ import time
 import datetime
 import os
 sys.path.append('/Users/amyskerry/google-cloud-sdk/platform/bq')
-from bq import apiclient
-from apiclient import googleapiclient, oauth2client
-import googleapiclient.discovery
-import oauth2client.client
-from googleapiclient.discovery import build
-from oauth2client.client import GoogleCredentials
-import pprint
-import types
 import cfg
 
 
@@ -45,108 +37,6 @@ def _log_query(client, query_response):
         with open(client.logging_file, 'a') as f:
             f.write(logline)
 
-
-def _monkey_patch_to_instance(function, instance):
-    '''add method to existing class'''
-    method = types.MethodType(function, instance)
-    setattr(instance, function.__name__, method)
-    return instance
-
-
-def get_service():
-    """returns an initialized and authorized bigquery client"""
-    credentials = GoogleCredentials.get_application_default()
-    if credentials.create_scoped_required():
-        credentials = credentials.create_scoped(
-            'https://www.googleapis.com/auth/bigquery')
-    return build('bigquery', 'v2', credentials=credentials)
-
-
-def list_projects(self):
-    """list projects associated with the service
-
-    INPUTS:
-        service (str): serviceid requested
-    OUTPUTS:
-        projectids (list): list of projectids associated with the service
-    """
-    try:
-        projects = self.service.projects()
-        list_reply = projects.list().execute()
-        projectids = []
-        if 'projects' in list_reply:
-            print 'Project list:'
-            projects = list_reply['projects']
-            for p in projects:
-                projectids.append(p['id'])
-                print "%s: %s" % (p['friendlyName'], p['id'])
-        else:
-            print "No projects found."
-        return projectids
-    except apiclient.errors.HttpError as err:
-        print 'Error in list_projects:', pprint.pprint(err.content)
-
-
-def list_datasets(project):
-    """list datasets associated with the project
-
-    INPUTS:
-        service (str): serviceid requested
-        project (str): projectid requested
-    OUTPUTS:
-        datasetids (list): list of datasetids associated with the project
-    """
-    try:
-        datasets = self.service.datasets()
-        list_reply = datasets.list(projectId=project).execute()
-        datasetids = []
-        if 'datasets' in list_reply:
-
-            print 'Dataset list:'
-            datasets = list_reply['datasets']
-            for d in datasets:
-                print d['datasetReference']['datasetId']
-                datasetids.append(d['datasetReference']['datasetId'])
-        else:
-            print "No datasets found."
-        return datasetids
-    except apiclient.errors.HttpError as err:
-        print 'Error in list_datasets:', pprint.pprint(err.content)
-
-
-def list_tables(project, dataset):
-    """list tables associated with the dataset
-
-    INPUTS:
-        service (str): serviceid requested
-        project (str): projectid requested
-        dataset (str): datasetid requested
-    OUTPUTS:
-        tableids (list): list of tableids associated with the project
-    """
-    try:
-        tables = self.service.tables()
-        list_reply = tables.list(
-            projectId=project, datasetId=dataset).execute()
-        tableids = []
-        if 'tables' in list_reply:
-            print 'Tables list:'
-            tables = list_reply['tables']
-            for t in tables:
-                print t['tableReference']['tableId']
-                tableids.append(t['tableReference']['tableId'])
-        else:
-            print "No tables found."
-        return tableids
-    except apiclient.errors.HttpError as err:
-        print 'Error in list_tables:', pprint.pprint(err.content)
-
-
-def delete_table(projectid, datasetid, tableid):
-    """deletes specified table"""
-    self.service.tables().delete(projectId=projectid,
-                                 datasetId=datasetid,
-                                 tableId=tableid).execute()
 
 
 class Mask_Printing():
