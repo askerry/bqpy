@@ -10,11 +10,12 @@ import sys
 import time
 import datetime
 import os
-sys.path.append('/Users/amyskerry/google-cloud-sdk/platform/bq')
 import cfg
+sys.path.append(cfg.gsdk_path)
 
 
 def _log_query(client, query_response):
+    '''log executed query and usage stats to the client's logging file'''
     if client.logging_file is not None:
         query = query_response['configuration']['query']['query']
         destination = query_response['configuration'][
@@ -29,14 +30,13 @@ def _log_query(client, query_response):
         processed_mb = str(float(usage_stats['totalBytesProcessed']) / 1000000)
         if not os.path.exists(client.logging_file):
             header = '|'.join(
-                ['date', 'user', 'query', 'destination', 'jobid', 'duration_ms', 'processed_mb', 'cached', '\n'])
+                ['date', 'user', 'query', 'destination', 'jobid', 'duration_ms', 'processed_mb', 'cached'])
             with open(client.logging_file, 'a') as f:
                 f.write(header)
         logline = '|'.join(
             [date, user, query, stringify(destination), jobid, duration_ms, processed_mb, cached, '\n'])
         with open(client.logging_file, 'a') as f:
             f.write(logline)
-
 
 
 class Mask_Printing():
@@ -77,6 +77,22 @@ class Mask_Printing():
 def stringify(tabledict):
     '''converts a table dictionary () to bq-style path string'''
     return "%s:%s.%s" % (tabledict['projectId'], tabledict['datasetId'], tabledict['tableId'])
+
+
+def dictify(tablestr):
+    '''converts bq-style path string to table dictionary'''
+    d = {}
+    d['projectId'] = tablestr[:tablestr.index(':')]
+    d['datasetId'] = tablestr[tablestr.index(':') + 1:tablestr.index('.')]
+    d['tableId'] = tablestr[tablestr.index('.') + 1:]
+    return d
+
+
+def convert_timestamp(tstamp):
+    if len(tstamp) == 13 and '.' not in tstamp:
+        tstamp = float(tstamp) / 1000
+    dtime = datetime.datetime.fromtimestamp(tstamp)
+    return dtime
 
 # define a mapping to use in various conversions
 mapping = {'text': "STRING", 'char': "STRING", 'varchar': "STRING", 'int': "INTEGER", 'tinyint': "INTEGER", 'smallint': "INTEGER", 'mediumint': "INTEGER",

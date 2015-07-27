@@ -9,13 +9,13 @@ import os
 import datetime
 import time
 from pympler.asizeof import asizeof
-sys.path.append('/Users/amyskerry/google-cloud-sdk/platform/bq')
+import cfg
+sys.path.append(cfg.gsdk_path)
 import bq
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
 import util
-import cfg
 from bq import apiclient
 from apiclient import googleapiclient, oauth2client
 import googleapiclient.discovery
@@ -32,8 +32,8 @@ def run_query(con, querystr, destination_table=None, dry_run=False):
         con (pybq.core.Connection) for interfacing with remote project
             includes client (bq.Client): connected client for querying database
         querystr (str): sql string specifying the query
-        destination_table (str): bq-style path to table ('projectid:datasetid.tableid') for writing results of query. 
-            if destination is None, client will create temporary table. 
+        destination_table (str): bq-style path to table ('projectid:datasetid.tableid') for writing results of query.
+            if destination is None, client will create temporary table.
         dry_run (bool): if True, query won't actually execute but just return stats on query
     OUPUTS:
         query_response (dict): dictionary summarizing action taken by query,
@@ -53,7 +53,7 @@ def fetch_query(con, query_response, start_row=0, max_rows=cfg.MAX_ROWS):
     INPUTS:
         con (pybq.core.Connection) for interfacing with remote project
             includes client (bq.Client): connected client for querying database
-        query_response (dict): dictionary specifying query_response (output of run_query), 
+        query_response (dict): dictionary specifying query_response (output of run_query),
             including remote table containing the query results
         start_row (int): row to start at when returning results
         max_rows (int): max # of rows to fetch
@@ -76,6 +76,13 @@ def get_service():
     return build('bigquery', 'v2', credentials=credentials)
 
 
+def get_resource(service, requestedtable):
+    if isinstance(requestedtable, str):
+        return service.tables().get(**util.dictify(requestedtable)).execute()
+    else:
+        return service.tables().get(requestedtable).execute()
+
+
 class Connection():
 
     '''connects to a bigquery client for the provided project_id
@@ -83,7 +90,7 @@ class Connection():
     INPUTS:
         project_id (str): project_id from google app developer console
     OUPUTS:
-        connection (object): class for interfacing with remote bigquery project 
+        connection (object): class for interfacing with remote bigquery project
             includes connection.client (bq.Client) provides connected client for querying database
     '''
 
@@ -91,14 +98,12 @@ class Connection():
         self.project_id = project_id
         self.logging_file = logging_file
         self.querycache = {}
-        self.querylog = {}
+        self.cache_max = cache_max
         if cache_max is None:
             self.cache_max = cfg.CACHE_MAX
-        else:
-            self.cache_max = cache_max
         self.client = bq.Client.Get()
         self.client.project_id = project_id
-        self.service = get_service()
+        self._service = get_service()
 
     def view_log(self):
         return pd.read_csv(self.logging_file, delimiter='|')
@@ -108,29 +113,59 @@ class Connection():
 
     def _cache_query(self, querystr, df, source, fetch):
         if self.cache_max > 0:
-            i = 0
-            print float(asizeof(self.querycache)) / 1048576
             while float(asizeof(self.querycache)) / 1048576 >= self.cache_max:
-                del self.querycache[self.querycache.keys()[i]]
-                i += 1
+                del self.querycache[self.querycache.keys()[0]]
             self.querycache[querystr] = {}
             self.querycache[querystr]['local'] = df
             self.querycache[querystr]['source'] = source
             self.querycache[querystr]['fetched'] = fetch
-
-    def _log_query(self, querystr):
-        timestamp = str(datetime.datetime.fromtimestamp(time.time()))
-        self.querylog[timestamp] = querystr
+            self.querycache[querystr]['timestamp'] = time.time()
 
     def flush_cache(self):
         self.querycache = {}
 
-    def _check_query(self, querystr, fetch):
-        return querystr in self.querycache and self.querycache[querystr]['fetched'] == fetch
+    def storage_report(self, projects=None, datasets=None, tables=None, storage_price_GBDay=.20 / 30):
+        storage_data = {'project': [], 'dataset': [], 'table': [],
+                        'storage': [], 'duration': [], 'price': [], 'cost': []}
+        if projects is None:
+            projects = [
+                p['id'] for p in self.con._service.projects().list().execute()['projects']]
+        for p in projects:
+            all_sets = [d['id'] for d in self.con._service.datasets().list(
+                projectId=p).execute()['datasets']]
+            if datasets is None:
+                datasets = all_sets
+            for d in all_sets:
+                if d['datasetReference']['datasetId'] in datasets:
+                    all_tables = [t['id'] for t in self.con._service.datasets().list(
+                        projectId=p, datasetId=d).execute()['tables']]
+                    if tables is None:
+                        tables = all_tables
+                    for t in all_tables:
+                        if d['tableReference']['tableId']in tables:
+                            resource = get_resource(
+                                self.service, {'projectId': p, 'datasetId': d, 'tableId': t})
+                            existed_dur = datetime.datetme.now(
+                            ) - util.convert_timestamp(resource['creationTime'])
+                            days = float(existed_dur) / 60 / 60 / 24
+                            storage_data['project'].append(p)
+                            storage_data['dataset'].append(d)
+                            storage_data['table'].append(t)
+                            mb = resource['numBytes'] / 1048576
+                            storage_data['MB'].append(mb)
+                            storage_data['duration'].append(months)
+                            storage_data[
+                                'price(GB/day)'].append(storage_price_GBDay)
+                            storage_data['cost'].append(
+                                days * (mb / 1000) * storage_price_GBDay)
+        return pd.DataFrame(data=storage_data)
+
+    def _check_query(self, querystr, fetch, last_modified):
+        return querystr in self.querycache and self.querycache[querystr]['fetched'] == fetch and self.querycache[querystr]['timestamp'] > last_modified
 
     def _fetch_from_cache(self, querystr):
-        print "fetching from local cache"
-        return self.querycache[querystr]['local'], self.querycache[querystr]['source']
+        print "Fetching from local cache."
+        return self.querycache[querystr]['local'], self.querycache[querystr]['source'], False
 
     def list_all_projects(self):
         """list projects associated with the service
@@ -141,7 +176,7 @@ class Connection():
             projectids (list): list of projectids associated with the service
         """
         try:
-            projects = self.service.projects()
+            projects = self._service.projects()
             list_reply = projects.list().execute()
             projectids = []
             if 'projects' in list_reply:
@@ -166,7 +201,7 @@ class Connection():
             datasetids (list): list of datasetids associated with the project
         """
         try:
-            datasets = self.service.datasets()
+            datasets = self._service.datasets()
             list_reply = datasets.list(projectId=project).execute()
             datasetids = []
             if 'datasets' in list_reply:
@@ -193,7 +228,7 @@ class Connection():
             tableids (list): list of tableids associated with the project
         """
         try:
-            tables = self.service.tables()
+            tables = self._service.tables()
             list_reply = tables.list(
                 projectId=project, datasetId=dataset).execute()
             tableids = []
@@ -211,6 +246,6 @@ class Connection():
 
     def delete_table(projectid, datasetid, tableid):
         """deletes specified table"""
-        self.service.tables().delete(projectId=projectid,
-                                     datasetId=datasetid,
-                                     tableId=tableid).execute()
+        self._service.tables().delete(projectId=projectid,
+                                      datasetId=datasetid,
+                                      tableId=tableid).execute()

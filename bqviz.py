@@ -31,6 +31,7 @@ def _plot_grouped_data(plotdf, value_col, grouping_col, kind='bar'):
 
 
 def plot_hist(df, col, ax=None):
+    '''plot histogram of values in col'''
     labels = ['<' + val[1:] for val in df.T.index.values]
     freqs = df.T.iloc[:, 0].values
     if ax is None:
@@ -42,7 +43,7 @@ def plot_hist(df, col, ax=None):
 
 
 def plot_scatter(df, xcol, ycol, ax=None, downsampled=True, error=None, counts=None):
-    '''plot a scatter plot of the data
+    '''plot a scatter plot of the data in xcol vs. ycol
     INPUTS:
        df (pandas dataframe): contains x and y datapoints to plot
        xcol (str): name of x column
