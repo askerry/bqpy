@@ -10,6 +10,7 @@ import sys
 import time
 import datetime
 import os
+import numpy as np
 import cfg
 sys.path.append(cfg.gsdk_path)
 
@@ -94,18 +95,18 @@ def convert_timestamp(tstamp):
     dtime = datetime.datetime.fromtimestamp(tstamp)
     return dtime
 
-# define a mapping to use in various conversions
-mapping = {'text': "STRING", 'char': "STRING", 'varchar': "STRING", 'int': "INTEGER", 'tinyint': "INTEGER", 'smallint': "INTEGER", 'mediumint': "INTEGER",
+# define mappings to use in various conversions
+sql2bqmapping = {'text': "STRING", 'char': "STRING", 'varchar': "STRING", 'int': "INTEGER", 'tinyint': "INTEGER", 'smallint': "INTEGER", 'mediumint': "INTEGER",
            'bigint': "INTEGER", 'float': "FLOAT", 'double': "FLOAT", 'decimal': "FLOAT", 'bool': "BOOLEAN", 'date': "TIMESTAMP", 'datetime': "TIMESTAMP"}
+df2bqmapping = {np.dtype('float64'): 'FLOAT', np.dtype('int64'): 'INTEGER', np.dtype('O'):'STRING', np.dtype('<M8[ns]'):'TIMESTAMP', np.dtype('bool'):'BOOLEAN'}
 
-
-def bqjson_from_sql_schema(cursor, tablename):
+def bqjson_from_sql_schema(cursor, tablename, dumpjson=True):
     '''accesses sql table schema and returns corresponding json for defining bq schema'''
     import json
     schema = query(cursor, 'describe %s' % tablename)
     dicts = []
     for line in schema:
-        datatype = mapping[
+        datatype = sql2bqmapping[
             ''.join([char for char in line[1].lower() if char.isalpha()])]
         mode = False
         if line[2] == 'NO':
@@ -114,10 +115,13 @@ def bqjson_from_sql_schema(cursor, tablename):
         if mode:
             d['mode'] = mode
         dicts.append(d)
-    return json.dumps(dicts)
+    if dumpjson:
+        return json.dumps(dicts)
+    else:
+        return dicts
 
 
-def bqjson_from_csv(con, csvpath):
+def bqjson_from_csv(con, csvpath, dumpjson=True):
     '''returns bq-style json schema for the provided csv (requires db connection because it uses a temporary sql table)'''
     import json
     string = create_table_string(csvpath, con, 'temporary_table')
@@ -126,7 +130,7 @@ def bqjson_from_csv(con, csvpath):
     dicts = []
     for line in s.split('\n')[1:]:
         line = line.strip().split(' ')
-        datatype = mapping[
+        datatype = sql2bqmapping[
             ''.join([char for char in line[1].lower() if char.isalpha()])]
         mode = "REQUIRED"
         if len(line) > 2 and line[3] == 'NULL':
@@ -135,7 +139,29 @@ def bqjson_from_csv(con, csvpath):
         if mode:
             d['mode'] = mode
         dicts.append(d)
-    return json.dumps(dicts)
+    if dumpjson:
+        return json.dumps(dicts)
+    else:
+        return dicts
+
+def bqjson_from_df(df, dumpjson=True):
+    '''returns bq-style json schema for the provided pandas dataframe)'''
+    import json
+    dicts = []
+    for col in df.columns:
+        dtype=df[col].dtype
+        datatype = df2bqmapping[dtype]
+        mode = "REQUIRED"
+        if len(df.columns) > 2 and df.columns[3] == 'NULL':
+            mode = False
+        d = {"name":col, 'type': datatype}
+        if mode:
+            d['mode'] = mode
+        dicts.append(d)
+    if dumpjson:
+        return json.dumps(dicts)
+    else:
+        return dicts
 
 
 def query(cursor, query):
@@ -170,3 +196,15 @@ def connect_cloudsql(cloudname, cloudip):
     cursor = db.cursor()
     print query(cursor, 'show databases')
     return cursor
+
+def get_fields(obj):
+    fields = []
+    for attr in dir(obj):
+        if not attr.startswith("_"):
+            try:
+                value = getattr(obj, attr)
+                if not callable(value):
+                    fields.append(attr)
+            except:
+                pass
+    return fields

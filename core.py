@@ -8,6 +8,7 @@ import sys
 import os
 import datetime
 import time
+import json
 from pympler.asizeof import asizeof
 import cfg
 sys.path.append(cfg.gsdk_path)
@@ -25,7 +26,7 @@ from oauth2client.client import GoogleCredentials
 import pprint
 
 
-def run_query(con, querystr, destination_table=None, dry_run=False):
+def run_query(con, querystr, destination_table=None, dry_run=False, create_disposition='CREATE_IF_NEEDED', write_disposition='WRITE_EMPTY', allow_large_results=False):
     '''executes a query on remote bq dataset
 
     INPUTS:
@@ -42,7 +43,7 @@ def run_query(con, querystr, destination_table=None, dry_run=False):
     if destination_table is not None:
         print "writing to temporary table %s" % destination_table
     query_response = con.client.Query(
-        querystr, destination_table=destination_table, dry_run=dry_run)
+        querystr, destination_table=destination_table, dry_run=dry_run, write_disposition=write_disposition, create_disposition=create_disposition, allow_large_results=allow_large_results)
     util._log_query(con, query_response)
     return query_response
 
@@ -76,11 +77,49 @@ def get_service():
     return build('bigquery', 'v2', credentials=credentials)
 
 
-def get_resource(service, requestedtable):
+def get_table_resource(service, requestedtable):
     if isinstance(requestedtable, str):
         return service.tables().get(**util.dictify(requestedtable)).execute()
     else:
         return service.tables().get(requestedtable).execute()
+
+
+def create_column_from_values(con, col, content, remotetable, length=None):
+    '''create new dataframe with column content (which can then be joined with existing table)'''
+    d = util.dictify(remotetable)
+    d['tableId'] = d['tableId'] + '_newcol_' + \
+        str(np.random.randint(1000, 10000))
+    if not hasattr(content, '__iter__'):
+        try:
+            np.isnan(content)
+        except TypeError:
+            content = unicode(content)
+        content = [content for i in range(length)]
+    df = pd.DataFrame({col: content})
+    con, dest = write_df_to_remote(
+        con, d['projectId'], d['datasetId'], d['tableId'], df)
+    return dest
+
+
+def write_df_to_remote(con, project_id, dataset_id, table_id, df):
+    '''write pandas dataframe as bigquery table'''
+    schema = {"fields": util.bqjson_from_df(df, dumpjson=False)}
+    dataset_ref = {'datasetId': dataset_id,
+                   'projectId': project_id}
+    table_ref = {'tableId': table_id,
+                 'datasetId': dataset_id,
+                 'projectId': project_id}
+    table = {"kind": "bigquery#table",
+             'tableReference': table_ref, 'schema': schema}
+    con.client._apiclient.tables().insert(body=table, **dataset_ref).execute()
+    datarows = []
+    for i, row in df.iterrows():
+        jsondata = {col: row[col] for col in df.columns}
+        datarows.append({"json": jsondata})
+    body = {'kind': 'bigquery#tableDataInsertAllRequest', 'rows': datarows}
+    update = con.client._apiclient.tabledata().insertAll(
+        body=body, **table_ref).execute()
+    return con, util.stringify(table_ref)
 
 
 class Connection():
@@ -103,7 +142,12 @@ class Connection():
             self.cache_max = cfg.CACHE_MAX
         self.client = bq.Client.Get()
         self.client.project_id = project_id
-        self._service = get_service()
+        self.client._apiclient = get_service()
+
+    def create_table(self, project_id, dataset_id, table_id, df, df_obj):
+        _, table = write_df_to_remote(
+            self, project_id, dataset_id, table_id, df)
+        return df_obj(self, table)
 
     def view_log(self):
         return pd.read_csv(self.logging_file, delimiter='|')
@@ -129,21 +173,21 @@ class Connection():
                         'storage': [], 'duration': [], 'price': [], 'cost': []}
         if projects is None:
             projects = [
-                p['id'] for p in self.con._service.projects().list().execute()['projects']]
+                p['id'] for p in self.client._apiclient.projects().list().execute()['projects']]
         for p in projects:
-            all_sets = [d['id'] for d in self.con._service.datasets().list(
+            all_sets = [d['id'] for d in self.client._apiclient.datasets().list(
                 projectId=p).execute()['datasets']]
             if datasets is None:
                 datasets = all_sets
             for d in all_sets:
                 if d['datasetReference']['datasetId'] in datasets:
-                    all_tables = [t['id'] for t in self.con._service.datasets().list(
+                    all_tables = [t['id'] for t in self.client._apiclient.datasets().list(
                         projectId=p, datasetId=d).execute()['tables']]
                     if tables is None:
                         tables = all_tables
                     for t in all_tables:
                         if d['tableReference']['tableId']in tables:
-                            resource = get_resource(
+                            resource = get_table_resource(
                                 self.service, {'projectId': p, 'datasetId': d, 'tableId': t})
                             existed_dur = datetime.datetme.now(
                             ) - util.convert_timestamp(resource['creationTime'])
@@ -176,7 +220,7 @@ class Connection():
             projectids (list): list of projectids associated with the service
         """
         try:
-            projects = self._service.projects()
+            projects = self.client._apiclient.projects()
             list_reply = projects.list().execute()
             projectids = []
             if 'projects' in list_reply:
@@ -201,7 +245,7 @@ class Connection():
             datasetids (list): list of datasetids associated with the project
         """
         try:
-            datasets = self._service.datasets()
+            datasets = self.client._apiclient.datasets()
             list_reply = datasets.list(projectId=project).execute()
             datasetids = []
             if 'datasets' in list_reply:
@@ -228,7 +272,7 @@ class Connection():
             tableids (list): list of tableids associated with the project
         """
         try:
-            tables = self._service.tables()
+            tables = self.client._apiclient.tables()
             list_reply = tables.list(
                 projectId=project, datasetId=dataset).execute()
             tableids = []
@@ -244,8 +288,19 @@ class Connection():
         except apiclient.errors.HttpError as err:
             print 'Error in list_tables:', pprint.pprint(err.content)
 
-    def delete_table(projectid, datasetid, tableid):
+    def delete_table(self, projectid, datasetid, tableid):
         """deletes specified table"""
-        self._service.tables().delete(projectId=projectid,
-                                      datasetId=datasetid,
-                                      tableId=tableid).execute()
+        self.client._apiclient.tables().delete(projectId=projectid,
+                                               datasetId=datasetid,
+                                               tableId=tableid).execute()
+
+    def create_table(self, projectid, datasetit, tableid, schema):
+        dataset_ref = {'datasetId': dataset_id,
+                       'projectId': project_id}
+        table_ref = {'tableId': table_id,
+                     'datasetId': dataset_id,
+                     'projectId': project_id}
+        table = {"kind": "bigquery#table",
+                 'tableReference': table_ref, 'schema': {'fields': schema}}
+        con.client._apiclient.tables().insert(
+            body=table, **dataset_ref).execute()

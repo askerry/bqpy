@@ -4,6 +4,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import itertools
 
 
 def _get_summaries(plotdf, value_col, grouping_col):
@@ -16,10 +17,11 @@ def _get_summaries(plotdf, value_col, grouping_col):
     return labels, means, sems
 
 
-def _plot_grouped_data(plotdf, value_col, grouping_col, kind='bar'):
+def _plot_grouped_data(plotdf, value_col, grouping_col, kind='bar', ax=None):
     '''plots data from value_col (Y), grouped by grouping_col (X)'''
     labels, means, sems = _get_summaries(plotdf, value_col, grouping_col)
-    f, ax = plt.subplots(figsize=[14, 3])
+    if ax is None:
+        f, ax = plt.subplots(figsize=[14, 3])
     xaxis = range(len(means))
     if kind == 'line':
         ax.errorbar(xaxis, means, yerr=sems)
@@ -27,6 +29,39 @@ def _plot_grouped_data(plotdf, value_col, grouping_col, kind='bar'):
         ax.bar(xaxis, means, yerr=sems)
     ax.set_xlim([min(xaxis), max(xaxis)])
     ax.set_xticklabels(labels, rotation=90)
+    return ax
+
+
+def _gridplot(bqdf):
+    plotables = [col for col in bqdf.columns if bqdf.local[
+        col].dtype in (np.int64, np.float64) or len(bqdf[col].unique()) < 10]
+    f, axes = plt.subplots(len(plotables), len(plotables))
+    for col1, col2 in itertools.combinations(plotables, 2):
+        i, j = plotables.index(col1), plotables.index(col2)
+        axis = axes[i, j]
+        if col1 == col2:
+            _ = bqdf.hist(col1, bins=20, ax=axis)
+        elif bqdf.local[col1].dtype in (np.int64, np.float64) and bqdf.local[col2].dtype in (np.int64, np.float64):
+            _ = bqdf.scatter(x=col1, y=col2, bins=200, ax=axis)
+        elif bqdf.local[col1].dtype not in (np.int64, np.float64) and bqdf.local[col2].dtype not in (np.int64, np.float64):
+            matdf = bqdf.contingency_mat(col1, col2)
+            bqdf.plot_matrix(matdf, ax=axis)
+        else:
+            if bqdf.local[col1].dtype in (np.int64, np.float64):
+                _ = bqdf.plot(col2, col1, ax=axis)
+            else:
+                _ = bqdf.plot(col1, col2, ax=axis)
+
+
+def plot_matrix(plotdf, axislabels=True, ax=None):
+    '''plots a heatmap for a matrix (e.g. for confusion matrices or contingency matrices'''
+    if ax is None:
+        f, ax = plt.subplots(figsize=[4,4])
+    ax.pcolor(plotdf.values, cmap='hot')
+    ax.set_yticks(np.arange(len(plotdf.index)) + .5)
+    ax.set_xticks(np.arange(len(plotdf.columns)) + .5)
+    ax.set_yticklabels(plotdf.index)
+    ax.set_xticklabels(plotdf.columns, rotation=90)
     return ax
 
 
