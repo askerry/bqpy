@@ -97,32 +97,37 @@ class BQDF():
         '''adds a column that replaces an existing column'''
         self.add_col(column, content, replace=True)
 
-    def add_col(self, column=None, content=1, replace=False, uniquecol=None, create_copy=False):
+    def rename(self, columns={}, inplace=False):
+        '''rename columns'''
+        #NOTE: involves full table scan
+        if inplace:
+            dest=self.remote
+        else:
+            dest=None
+        cols=[col for col in self.columns if col not in columns]
+        renames=["%s as %s" %(key, columns[key]) for key in columns]
+        querystr="SELECT %s FROM %s" (', '.join(renames+cols), self.tablename)
+        newdf = self.query(querystr, fetch=self.fetched, dest=dest, overwrite_method='overwrite')
+        self.refresh()
+        if not inplace:
+            return newdf
+
+    def add_col(self, column=None, content=1, replace=False, inplace=True):
         '''add new column to the table '''
-        # TODO this is super inefficient. think about alternative implementation (major constraint: can't change existing rows of a table)
-        # TODO warn/prompt for permission to perform these very costly
+        # TODO think about alternative implementation (major constraint: can't change existing rows of a table)
+        # TODO warn/prompt for permission to perform these more costly
         # operations?
         if column in self.columns:
-            raise NameError("%s is already a column in table" % column)
+            if replace:
+                del self[column]
+            else:
+                raise NameError("%s is already a column in table" % column)
         newremote, length = self._get_remote_reference(content, column)
         with util.Mask_Printing():
-            d = util.dictify(self.remote)
-            d['tableId'] = d['tableId'] + '_newcol_' + \
-                str(np.random.randint(1000, 10000))
-            # TODO: in order to use existing bqdf.join, I create the indexed
-            # table (full table scan) and then join it in a separate query.
-            # should create modified join?
-            rowdf = self.query(
-                'SELECT ROW_NUMBER() OVER() index, * from %s' % self.tablename, dest=util.stringify(d), fetch=False)
-            newdf = self._query_newly_created(newremote, length)
-            if replace:
-                del rowdf['column']
-            rowdf.join(newdf, on='index', dest=self.remote, inplace=True)
-            del rowdf['df1_index']
-            del rowdf['df2_index']
-            rowdf.refresh()
-            for attr in util.get_fields(rowdf):
-                setattr(self, attr, getattr(rowdf, attr))
+            df=self._add_col_join(newremote, column, inplace)
+            self.refresh()
+        if not inplace:
+            return df
 
     def add_col(self, columns, content=1, replace=False):
         if column in self.columns:
@@ -135,6 +140,10 @@ class BQDF():
         ndf.remote = ndf.remote + '_slice_%sto%s' % (start, end)
         _ = write_df_to_remote(self.con, ndf.remote, ndf)
         return ndf
+
+    def save(self, project_id, dataset_id, table_id):
+        '''copy table (useful for saving a bqdf currently pointing to a temporary table'''
+        pass
 
 
 ########################################
@@ -858,6 +867,22 @@ class BQDF():
         result = {f['name']: d for f, d in zip(fields, data[0])}
         return result
 
+    def _add_col_join(self, newdfname, newcol, inplace):
+        df1cols, df2cols = set(self.columns), (newcol,)
+        dups = df1cols.intersection(df2cols)
+        fulldups = list(
+            np.array([['df1.' + i, 'df2.' + i] for i in dups]).flatten())
+        allcols = [c for c in list(
+            df1cols) + list(df2cols) + fulldups if c not in dups and 'index' not in c]
+        querystr = 'SELECT %s FROM (SELECT ROW_NUMBER() OVER() index, * FROM %s) as tb1 JOIN(SELECT ROW_NUMBER() OVER() index, * from %s) tb2 on tb1.index==tb2.index' % (
+            ', '.join(allcols), newdfname, self.tablename)
+        if inplace:
+            dest = self.remote
+        else:
+            dest = None
+        df, _, _ = raw_query(self.con, querystr, self.last_modified,dest=dest, overwrite_method='WRITE_TRUNCATE', fetch=self.fetched)
+        return df
+
 
 ##########################################################################
 ############################################ SUPPLEMENTAL FUNCTIONS ######
@@ -964,19 +989,4 @@ def _create_single_where(key, value, operation):
     return '%s %s %s' % (key, operation, value)
 
 
-def add_col_join(maindf, newdf, create_copy):
-    df1cols, df2cols = set(maindf.columns), set(newdf.columns)
-    dups = df1cols.intersection(df2cols)
-    fulldups = list(
-        np.array([['df1.' + i, 'df2.' + i] for i in dups]).flatten())
-    allcols = [c for c in list(
-        df1cols) + list(df2cols) + fulldups if c not in dups and c != 'index']
-    querystr = 'SELECT %s FROM (SELECT * FROM %s) as tb1 JOIN(SELECT ROW_NUMBER() OVER() index, * from %s) tb2 on tb1.index==tb2.index' % (
-        ', '.join(allcols), newdf.tablename, maindf.tablename)
-    if create_copy:
-        dest = None
-    else:
-        dest = maindf.remote
-    df, _, _ = raw_query(maindf.con, querystr, maindf.last_modified,
-                      dest=dest, overwrite_method='WRITE_TRUNCATE', fetch=maindf.fetched)
-    return df
+
