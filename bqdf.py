@@ -97,7 +97,7 @@ class BQDF():
         '''adds a column that replaces an existing column'''
         self.add_col(column, content, replace=True)
 
-    def add_col(self, column=None, content=1, replace=False, uniquecol=None):
+    def add_col(self, column=None, content=1, replace=False, uniquecol=None, create_copy=False):
         '''add new column to the table '''
         # TODO this is super inefficient. think about alternative implementation (major constraint: can't change existing rows of a table)
         # TODO warn/prompt for permission to perform these very costly
@@ -527,6 +527,8 @@ class BQDF():
 # ######       STATISTICS        #######
 ########################################
 
+#TODO: write tests for all stats and handle nan values correctly
+
     def ttest_1samp(self, col, nullhypothesis=0):
         #(mean-nullhyp)/(std/sqrt(n))
         pass
@@ -648,6 +650,15 @@ class BQDF():
         with util.Mask_Printing():
             ndf = self.query(top_query, fetch=True)
         return ndf
+
+    def sample(self, uniquecol, p=.10,  columns=None):
+        '''generate a random sample of the data'''
+        if columns is None:
+            columns = self.columns
+        modval = int(round(1 / p))
+        querystr = 'SELECT %s FROM %s WHERE HASH(STRING(%s)) \% %s == 0' % (
+            ', '.join(columns), self.tablename, uniquecol, modval)
+        return self.query(querystr)
 
 
 ########################################
@@ -951,3 +962,21 @@ def _create_where_statement(*args):
 
 def _create_single_where(key, value, operation):
     return '%s %s %s' % (key, operation, value)
+
+
+def add_col_join(maindf, newdf, create_copy):
+    df1cols, df2cols = set(maindf.columns), set(newdf.columns)
+    dups = df1cols.intersection(df2cols)
+    fulldups = list(
+        np.array([['df1.' + i, 'df2.' + i] for i in dups]).flatten())
+    allcols = [c for c in list(
+        df1cols) + list(df2cols) + fulldups if c not in dups and c != 'index']
+    querystr = 'SELECT %s FROM (SELECT * FROM %s) as tb1 JOIN(SELECT ROW_NUMBER() OVER() index, * from %s) tb2 on tb1.index==tb2.index' % (
+        ', '.join(allcols), newdf.tablename, maindf.tablename)
+    if create_copy:
+        dest = None
+    else:
+        dest = maindf.remote
+    df, _, _ = raw_query(maindf.con, querystr, maindf.last_modified,
+                      dest=dest, overwrite_method='WRITE_TRUNCATE', fetch=maindf.fetched)
+    return df

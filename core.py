@@ -201,6 +201,8 @@ class Connection():
     def flush_cache(self):
         self.querycache = {}
 
+    #Broken and low priority
+    '''
     def storage_report(self, projects=None, datasets=None, tables=None, storage_price_GBDay=.20 / 30):
         storage_data = {'project': [], 'dataset': [], 'table': [],
                         'storage': [], 'duration': [], 'price': [], 'cost': []}
@@ -236,6 +238,7 @@ class Connection():
                             storage_data['cost'].append(
                                 days * (mb / 1000) * storage_price_GBDay)
         return pd.DataFrame(data=storage_data)
+    '''
 
     def _check_query(self, querystr, fetch, last_modified):
         return querystr in self.querycache and self.querycache[querystr]['fetched'] == fetch and self.querycache[querystr]['timestamp'] > last_modified
