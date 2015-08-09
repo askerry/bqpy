@@ -26,6 +26,12 @@ from oauth2client.client import GoogleCredentials
 import pprint
 
 
+# TODOs
+# - fix fact that all of this uses an arbitrary/weird mashup of python client and json api
+# - support exporting from cloud storage/datastore to bigquery
+# - making caching/logging less janky
+
+
 def run_query(con, querystr, destination_table=None, dry_run=False, create_disposition='CREATE_IF_NEEDED', write_disposition='WRITE_EMPTY', allow_large_results=False):
     '''executes a query on remote bq dataset
 
@@ -66,6 +72,33 @@ def fetch_query(con, query_response, start_row=0, max_rows=cfg.MAX_ROWS):
     fields, data = con.client.ReadSchemaAndRows(
         fetch_table, start_row=start_row, max_rows=max_rows)
     return fields, data
+
+
+def bqresult_2_df(fields, data):
+    # TODO make type conversion/ schema inference less hacky/more robust
+    '''takes the output of the bigquery call and returns data as a dataframe with appropriate dtypes
+    INPUTS:
+        fields (list): list of dictionaries representing table schema with names and types for each column
+        data (list): list of rows of data from table resulting from query
+    OUPUTS:
+        df (pandas dataframe): dataframe with fields as columns and data as rows
+    '''
+    format_table = {'STRING': unicode, 'FLOAT': np.float64,
+                    'INTEGER': np.int64, 'DATE': 'datetime64[ns]', 'TIMESTAMP': 'datetime64[ns]', 'BOOLEAN': bool}
+    cols = [field['name'] for field in fields]
+    dtypes = {field['name']: format_table[field['type']] for field in fields}
+    df = pd.DataFrame(columns=cols, data=data)
+    df = df.fillna(np.nan)
+    for key, value in dtypes.items():
+        if "date" in key or 'time' in key:
+            df[key] = df[key].astype('datetime64')
+        else:
+            try:
+                df[key] = df[key].astype(value)
+            except ValueError:
+                df[key] = df[key].astype(np.float64)
+
+    return df
 
 
 def get_service():
@@ -231,6 +264,7 @@ class Connection():
                     print "%s: %s" % (p['friendlyName'], p['id'])
             else:
                 print "No projects found."
+            print "\n"
             return projectids
         except apiclient.errors.HttpError as err:
             print 'Error in list_projects:', pprint.pprint(err.content)
@@ -257,6 +291,7 @@ class Connection():
                     datasetids.append(d['datasetReference']['datasetId'])
             else:
                 print "No datasets found."
+            print "\n"
             return datasetids
         except apiclient.errors.HttpError as err:
             print 'Error in list_datasets:', pprint.pprint(err.content)
@@ -284,6 +319,7 @@ class Connection():
                     tableids.append(t['tableReference']['tableId'])
             else:
                 print "No tables found."
+            print "\n"
             return tableids
         except apiclient.errors.HttpError as err:
             print 'Error in list_tables:', pprint.pprint(err.content)

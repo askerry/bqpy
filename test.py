@@ -22,22 +22,25 @@ numeric1 = 'weight_pounds'
 numeric2 = 'mother_age'
 categorical = 'state'
 
+
 def df_allclose(df1, df2):
-    colmatch=df1.columns==df2.columns
-    valmatch=array_allclose(df1.values.flatten, df1.values.flatten)
+    colmatch = df1.columns == df2.columns
+    valmatch = array_allclose(df1.values.flatten, df1.values.flatten)
     return colmatch & valmatch
 
-def array_allclose(a,b):
-    matches=[]
-    for i,j in zip(a,b):
+
+def array_allclose(a, b):
+    matches = []
+    for i, j in zip(a, b):
         try:
             if np.isnan(i) and np.isnan(j):
                 matches.append(True)
             else:
-                matches.append(np.allclose(i,j))
+                matches.append(np.allclose(i, j))
         except:
-            matches.append(np.allclose(i,j))
+            matches.append(np.allclose(i, j))
     return matches
+
 
 class UnivariateTests(unittest.TestCase):
 
@@ -75,7 +78,8 @@ class UnivariateTests(unittest.TestCase):
 class TransformationTests(unittest.TestCase):
 
     def test_abs(self):
-        self.assertTrue(array_allclose(df[numeric1].abs(fetch=True).local['abs'].values,fulldata[numeric1].abs().values))
+        self.assertTrue(array_allclose(df[numeric1].abs(
+            fetch=True).local['abs'].values, fulldata[numeric1].abs().values))
 
     def test_pow2(self):
         self.assertTrue(array_allclose(
@@ -115,15 +119,19 @@ class AggregationTests():
 
 
 class SummarizationTests():
-    #def test_describe(self):
+    # def test_describe(self):
     #    pass
     # hist values
     # columns
+
     def test_column(self):
-        self.assertTrue(array_allclose(df[numeric1].columns, fulldata[numeric1].columns))
+        self.assertTrue(
+            array_allclose(df[numeric1].columns, fulldata[numeric1].columns))
     # limiting
+
     def test_unique(self):
-        self.assertTrue(array_allclose(df[numeric1].unique(fetch=True), fulldata[numeric1].unique().values))
+        self.assertTrue(array_allclose(
+            df[numeric1].unique(fetch=True), fulldata[numeric1].unique().values))
     # corr mat
     pass
 

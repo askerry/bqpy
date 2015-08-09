@@ -97,8 +97,10 @@ def convert_timestamp(tstamp):
 
 # define mappings to use in various conversions
 sql2bqmapping = {'text': "STRING", 'char': "STRING", 'varchar': "STRING", 'int': "INTEGER", 'tinyint': "INTEGER", 'smallint': "INTEGER", 'mediumint': "INTEGER",
-           'bigint': "INTEGER", 'float': "FLOAT", 'double': "FLOAT", 'decimal': "FLOAT", 'bool': "BOOLEAN", 'date': "TIMESTAMP", 'datetime': "TIMESTAMP"}
-df2bqmapping = {np.dtype('float64'): 'FLOAT', np.dtype('int64'): 'INTEGER', np.dtype('O'):'STRING', np.dtype('<M8[ns]'):'TIMESTAMP', np.dtype('bool'):'BOOLEAN'}
+                 'bigint': "INTEGER", 'float': "FLOAT", 'double': "FLOAT", 'decimal': "FLOAT", 'bool': "BOOLEAN", 'date': "TIMESTAMP", 'datetime': "TIMESTAMP"}
+df2bqmapping = {np.dtype('float64'): 'FLOAT', np.dtype('int64'): 'INTEGER', np.dtype(
+    'O'): 'STRING', np.dtype('<M8[ns]'): 'TIMESTAMP', np.dtype('bool'): 'BOOLEAN'}
+
 
 def bqjson_from_sql_schema(cursor, tablename, dumpjson=True):
     '''accesses sql table schema and returns corresponding json for defining bq schema'''
@@ -144,17 +146,18 @@ def bqjson_from_csv(con, csvpath, dumpjson=True):
     else:
         return dicts
 
+
 def bqjson_from_df(df, dumpjson=True):
     '''returns bq-style json schema for the provided pandas dataframe)'''
     import json
     dicts = []
     for col in df.columns:
-        dtype=df[col].dtype
+        dtype = df[col].dtype
         datatype = df2bqmapping[dtype]
         mode = "REQUIRED"
         if len(df.columns) > 2 and df.columns[3] == 'NULL':
             mode = False
-        d = {"name":col, 'type': datatype}
+        d = {"name": col, 'type': datatype}
         if mode:
             d['mode'] = mode
         dicts.append(d)
@@ -196,6 +199,7 @@ def connect_cloudsql(cloudname, cloudip):
     cursor = db.cursor()
     print query(cursor, 'show databases')
     return cursor
+
 
 def get_fields(obj):
     fields = []
