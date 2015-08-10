@@ -33,7 +33,7 @@ from core import run_query, fetch_query, Connection, create_column_from_values, 
 ##########################################################################
 
 
-class BQDF():
+class BQDF(object):
 
     '''Reference to a bigquery table that provides some quick and easy access
     to basic features of the table. Aims to replicate some of the basic functionality
@@ -91,28 +91,28 @@ class BQDF():
             new_bqdf.local = output
             new_bqdf.fetched = fetch
         if exceeds_max:
-            pass #TODO figure how why exceeds_max isn't behaving as expected
-            #print "Number of rows in remote table exceeds bqdf object's max_rows. Only max_rows have been fetched locally"
+            pass  # TODO figure how why exceeds_max isn't behaving as expected
+            # print "Number of rows in remote table exceeds bqdf object's
+            # max_rows. Only max_rows have been fetched locally"
         return new_bqdf
 
-    def replace(self, column=None, content=1):
-        '''adds a column that replaces an existing column'''
-        self.add_col(column, content, replace=True)
-
-    def rename(self, columns={}, inplace=False):
+    def rename(self, rename_columns, inplace=False):
         '''rename columns'''
-        #NOTE: involves full table scan
+        # NOTE: involves full table scan
         if inplace:
-            dest=self.remote
+            dest = self.remote
         else:
-            dest=None
-        cols=[col for col in self.columns if col not in columns]
-        renames=["%s as %s" %(key, columns[key]) for key in columns]
-        querystr="SELECT %s FROM %s" (', '.join(renames+cols), self.tablename)
-        newdf = self.query(querystr, fetch=self.fetched, dest=dest, overwrite_method='overwrite')
-        self.refresh()
+            dest = None
+        cols = [col for col in self.columns if col not in rename_columns]
+        renames = ["%s as %s" % (key, columns[key]) for key in rename_columns]
+        querystr = "SELECT %s FROM %s" (
+            ', '.join(renames + cols), self.tablename)
+        newdf = self.query(
+            querystr, fetch=self.fetched, dest=dest, overwrite_method='overwrite')
         if not inplace:
             return newdf
+        else:
+            self.refresh()
 
     def add_col(self, column=None, content=1, replace=False, inplace=True):
         '''add new column to the table '''
@@ -125,19 +125,26 @@ class BQDF():
             else:
                 raise NameError("%s is already a column in table" % column)
         newremote, length = self._get_remote_reference(content, column)
-        with util.Mask_Printing():
-            df=self._add_col_join(newremote, column, inplace)
-            self.refresh()
+        # with util.Mask_Printing():
+        df = self._add_col_join(newremote, column, inplace)
         if not inplace:
             return df
+        else:
+            self.refresh()
+
+    def replace(self, column=None, content=1):
+        '''adds a column that replaces an existing column'''
+        self.add_col(column, content, replace=True)
 
     def slice(self, start=0, end=10):
+        # NOTE need to fit slice locally
+        # see if there is a bigquery way to do this
         fields, data = self.con.client.ReadSchemaAndRows(
             util.dictify(self.remote), start_row=start, max_rows=end - start)
         ndf = bqresult_2_df(fields, data)
         dest = self.remote + '_slice_%sto%s' % (start, end)
         _ = write_df_to_remote(self.con, ndf, **util.dictify(dest))
-        if not self.check_write(dest):
+        if not self._check_write(dest):
             warnings.warn('failed to write new slice to bigquery')
         ndf = BQDF(self.con, dest)
         ndf.refresh()
@@ -160,18 +167,9 @@ class BQDF():
         OUTPUTS:
            ndf: BQDF instance for result
         '''
-        if 'fetch' in kwargs:
-            fetch = kwargs['fetch']
-        else:
-            fetch = True
-        if 'dest' in kwargs:
-            dest = kwargs['dest']
-        else:
-            dest = None
-        if 'columns' in kwargs:
-            columns = kwargs['columns']
-        else:
-            columns = self.columns
+        fetch = kwargs.get('fetch', True)
+        dest = kwargs.get('dest', None)
+        columns = kwargs.get('columns', self.columns)
         filter_query = "SELECT %s FROM %s WHERE %s" % (', '.join(columns),
                                                        self.tablename, _create_where_statement(args))
         ndf = self.query(filter_query, fetch=fetch, dest=dest)
@@ -200,29 +198,27 @@ class BQDF():
         ndf = self.query(grouping_query, fetch=fetch, dest=dest)
         return ndf
 
-    def apply(self, func, col=None, columns=None, max_rows=cfg.MAX_ROWS, fetch=True, dest=None, chunksize=1000):
+    def apply(self, func, col=None, columns=None, max_rows=cfg.MAX_ROWS, fetch=True, dest=None, chunksize=10000):
         '''idea is to (in a majorly hacky way) allow arbitrary python "udfs" but pulling each row locally and applying the python function, then writing back to bq'''
         # TODO make work and allow user to provide arguments to function
         if col is None:
-            col=self.active_col
+            col = self.active_col
         startrow = 0
-        # TODO less hacky way to wait for this job to run: maybe see
-        # client.wait_for_job in https://github.com/tylertreat/BigQuery-Python
-        while startrow  < len(self):
+        while startrow < len(self):
             fields, data = self.con.client.ReadSchemaAndRows(
                 util.dictify(self.remote), start_row=startrow, max_rows=chunksize)
             ndf = bqresult_2_df(fields, data)
             ndf[col + '_mod'] = ndf[col].apply(func)
             if dest is None:
                 dest = self.remote + '_mod_%s' % col
-            ndf=ndf[[col+'_mod']]
-            _, _ = write_df_to_remote(self.con, ndf, overwrite_method='append', **util.dictify(dest))
+            ndf = ndf[[col + '_mod']]
+            _, _ = write_df_to_remote(
+                self.con, ndf, overwrite_method='append', **util.dictify(dest))
             startrow += chunksize
-        if not self.check_write(dest):
+        if not self._check_write(dest):
             warnings.warn('remote writing of UDF apply function failed')
         combined_df = BQDF(self.con, dest)
         return combined_df
-
 
     def groupby_apply(self, groupingcol, func, columns=None, max_rows=cfg.MAX_ROWS, fetch=True, dest=None):
         ''' same as apply (python udf hack) but for groups analogous to df.groupby('col').apply(myfunc)
@@ -246,13 +242,13 @@ class BQDF():
             if dest is None:
                 gdf = self.query(group_query, fetch=True, dest=None)
                 dest = gdf.remote
-            _,_ = write_df_to_remote(self.con, applied_ndf, overwrite_method='append', **util.dictify(dest))
-        if not self.check_write(dest):
-            warnings.warn('remote writing of UDF groupby-apply function failed')
+            _, _ = write_df_to_remote(
+                self.con, applied_ndf, overwrite_method='append', **util.dictify(dest))
+        if not self._check_write(dest):
+            warnings.warn(
+                'remote writing of UDF groupby-apply function failed')
         gdf = BQDF(self.con, '%s' % dest)
         return gdf
-       
-       
 
     def join(self, df2, on=None, left_on=None, right_on=None, how='LEFT', dest=None, inplace=True):
         '''joins table with table referenced in df2 and optionally returns result'''
@@ -262,15 +258,12 @@ class BQDF():
         else:
             overwrite_method = 'fail'
         if left_on is None:
-            left_on = on
-            right_on = on
-        df1cols = set(self.columns)
-        df2cols = set(df2.columns)
-        dups = df1cols.intersection(df2cols)
-        fulldups = list(
-            np.array([['df1.' + i, 'df2.' + i] for i in dups]).flatten())
+            left_on, right_on = on, on
+        dups = list(set(self.columns).intersection(set(df2.columns)))
+        fulldups = [x for j in [['df1.' + i, 'df2.' + i]
+                                for i in dups] for x in j]
         allcols = [
-            c for c in list(df1cols) + list(df2cols) + fulldups if c not in dups]
+            c for c in self.columns + df2.columns + fulldups if c not in dups]
         join_query = "SELECT %s FROM %s df1 %s JOIN %s df2 ON df1.%s=df2.%s" % (', '.join(allcols),
                                                                                 self.tablename, how, df2.tablename, left_on, right_on)
         with util.Mask_Printing():
@@ -376,12 +369,12 @@ class BQDF():
         return ndf
 
     def divide(self, col1, col2, fetch=cfg.FETCH_BY_DEFAULT):
-        ndf = self.query('SELECT %s / %s as diff from %s' %
+        ndf = self.query('SELECT %s / %s as div from %s' %
                          (col1, col2, self.tablename), fetch=fetch, fill=False)
         return ndf
 
     def multiply(self, col1, col2, fetch=cfg.FETCH_BY_DEFAULT):
-        ndf = self.query('SELECT %s * %s as diff from %s' %
+        ndf = self.query('SELECT %s * %s as product from %s' %
                          (col1, col2, self.tablename), fetch=fetch, fill=False)
         return ndf
 
@@ -407,7 +400,7 @@ class BQDF():
         '''round column to specified digit'''
         if col is None:
             col = self.active_col
-        ndf = self.query('SELECT round(%s, %s) as round from %s' %
+        ndf = self.query('SELECT ROUND(%s, %s) as round from %s' %
                          (col, dig, self.tablename), fetch=fetch, fill=False)
         self._clear_active_col()
         return ndf
@@ -425,13 +418,10 @@ class BQDF():
         '''compute log of the column values'''
         if col is None:
             col = self.active_col
-        if base == 'e':
-            func = 'ln'
-        elif base == 2:
-            func = 'log2'
-        elif base == 10:
-            func = 'log10'
-        else:
+        logs = {'e': 'ln', 2: 'log2', 10: 'log10'}
+        try:
+            func = logs[base]
+        except KeyError:
             raise NameError("log base %s is not supported" % base)
         ndf = self.query('SELECT %s(%s) as log from %s' %
                          (func, col, self.tablename), fetch=fetch, fill=False)
@@ -548,7 +538,7 @@ class BQDF():
 # ######       STATISTICS        #######
 ########################################
 
-#TODO: write tests for all stats and handle nan values correctly
+# TODO: write tests for all stats and handle nan values correctly
 
     def ttest_1samp(self, col, nullhypothesis=0):
         #(mean-nullhyp)/(std/sqrt(n))
@@ -702,6 +692,7 @@ class BQDF():
     def qqplot(self, col=None):
         if col is None:
             col = self.active_col
+        # TODO implement
 
     def gridplot(self):
         return bqviz._gridplot(self)
@@ -777,10 +768,9 @@ class BQDF():
             return int(self.resource['numRows'])
         except KeyError:
             with util.Mask_Printing():
-                output, source, exceeds_max = raw_query(self.con, 'SELECT COUNT(*) FROM %s' %self.tablename, self.last_modified)
+                output, source, exceeds_max = raw_query(
+                    self.con, 'SELECT COUNT(*) FROM %s' % self.tablename, self.last_modified)
             return output.values[0][0]
-            
-            
 
     def footprint(self):
         '''check size of table'''
@@ -836,22 +826,25 @@ class BQDF():
                 self.con, column, content, self.remote, length=length)
         return newremote, length
 
-    def check_write(self, newremote, timeout=10):
+    def _check_write(self, newremote, timeout=10):
         '''query from a newly created table (waits until table has been fully inserted)'''
         loaded = False
         start_time = time()
         elapsed_time = 0
         while not loaded:
             if elapsed_time < timeout:
-                resource = get_table_resource(self.con.client._apiclient, util.dictify(newremote))
-                if 'numRows' in resource: #won't contain this attribute while actively streaming insertions
-                    if int(resource['numRows'])>0:
+                resource = get_table_resource(
+                    self.con.client._apiclient, util.dictify(newremote))
+                # won't contain this attribute while actively streaming
+                # insertions
+                if 'numRows' in resource:
+                    if int(resource['numRows']) > 0:
                         return True
                 elapsed_time = time() - start_time
                 sleep(.5)
             else:
                 return False
-    
+
     def _set_active_col(self, col):
         '''sets the "active column" to use for subsequent operation'''
         self.active_col = col
@@ -895,19 +888,16 @@ class BQDF():
         return result
 
     def _add_col_join(self, newdfname, newcol, inplace):
-        df1cols, df2cols = set(self.columns), (newcol,)
-        dups = df1cols.intersection(df2cols)
-        fulldups = list(
-            np.array([['df1.' + i, 'df2.' + i] for i in dups]).flatten())
-        allcols = [c for c in list(
-            df1cols) + list(df2cols) + fulldups if c not in dups and 'index' not in c]
-        querystr = 'SELECT %s FROM (SELECT ROW_NUMBER() OVER() index, * FROM %s) as tb1 JOIN(SELECT ROW_NUMBER() OVER() index, * from %s) tb2 on tb1.index==tb2.index' % (
+        allcols = [col for col in self.columns + [newcol] if col != 'index']
+        querystr = 'SELECT %s FROM (SELECT ROW_NUMBER() OVER() as index, * FROM %s) as tb1 JOIN(SELECT ROW_NUMBER() OVER() as index, * from %s) tb2 on tb1.index==tb2.index' % (
             ', '.join(allcols), newdfname, self.tablename)
         if inplace:
             dest = self.remote
         else:
             dest = None
-        df, _, _ = raw_query(self.con, querystr, self.last_modified,dest=dest, overwrite_method='overwrite', fetch=self.fetched)
+        print querystr
+        df, _, _ = raw_query(self.con, querystr, self.last_modified,
+                             dest=dest, overwrite_method='overwrite', fetch=self.fetched)
         return df
 
 
@@ -980,7 +970,7 @@ def _create_full_str(col, binbreaks, kind='count', ycol=None):
 
 
 def _create_case_str_count(col, minq, maxq, qn):
-    return 'SUM(CASE WHEN %s>=%.5f and %s<%.5f THEN 1 ELSE 0 END) as %s' % (col, minq, col, maxq, "_%.0f" % (maxq))
+    return 'SUM(CASE WHEN %s>=%.5f and %s<%.5f THEN 1 ELSE 0 END) as %s' % (col, minq, col, maxq, "%s_%.0f" % (col, maxq))
 
 
 def _create_case_str_mean(xcol, ycol, minq, maxq, qn):
@@ -999,13 +989,12 @@ def _create_where_statement(*args):
         for o in operations:
             try:
                 output = expression.split(o)
-                operation = o
                 col = output[0].strip()
                 try:
                     val = float(output[1].strip())
                 except ValueError:
                     val = '"%s"' % output[1].strip()
-                wheres.append(_create_single_where(col, val, operation))
+                wheres.append(_create_single_where(col, val, o))
                 break
             except:
                 pass
@@ -1014,6 +1003,3 @@ def _create_where_statement(*args):
 
 def _create_single_where(key, value, operation):
     return '%s %s %s' % (key, operation, value)
-
-
-

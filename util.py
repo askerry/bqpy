@@ -41,44 +41,44 @@ def _log_query(client, query_response):
 
 
 def wait_for_job(project_id, job, interval=5, timeout=60):
-        """
-        Waits until the job indicated by job_resource is done or has failed
-        Args:
-            job: dict, representing a BigQuery job resource
-                 or str, representing a BigQuery job id
-            interval: optional float polling interval in seconds, default = 5
-            timeout: optional float timeout in seconds, default = 60
-        Returns:
-            dict, final state of the job_resource, as described here:
-            https://developers.google.com/resources/api-libraries/documentation
-            /bigquery/v2/python/latest/bigquery_v2.jobs.html#get
-        Raises:
-            JobExecutingException on http/auth failures or error in result
-            BigQueryTimeoutException on timeout
-        """
-        complete = False
-        job_id = str(job if isinstance(job,
-                                       (six.binary_type, six.text_type, int))
-                     else job['jobReference']['jobId'])
-        job_resource = None
+    """
+    Waits until the job indicated by job_resource is done or has failed
+    Args:
+        job: dict, representing a BigQuery job resource
+             or str, representing a BigQuery job id
+        interval: optional float polling interval in seconds, default = 5
+        timeout: optional float timeout in seconds, default = 60
+    Returns:
+        dict, final state of the job_resource, as described here:
+        https://developers.google.com/resources/api-libraries/documentation
+        /bigquery/v2/python/latest/bigquery_v2.jobs.html#get
+    Raises:
+        JobExecutingException on http/auth failures or error in result
+        BigQueryTimeoutException on timeout
+    """
+    complete = False
+    job_id = str(job if isinstance(job,
+                                   (six.binary_type, six.text_type, int))
+                 else job['jobReference']['jobId'])
+    job_resource = None
 
-        start_time = time()
-        elapsed_time = 0
-        while not (complete or elapsed_time > timeout):
-            sleep(interval)
-            job_resource = self.bigquery.jobs().get(projectId=project_id,
-                                               jobId=job_id).execute()
-            complete = job_resource.get('status').get('state') == u'DONE'
-            elapsed_time = time() - start_time
+    start_time = time()
+    elapsed_time = 0
+    while not (complete or elapsed_time > timeout):
+        sleep(interval)
+        job_resource = self.bigquery.jobs().get(projectId=project_id,
+                                                jobId=job_id).execute()
+        complete = job_resource.get('status').get('state') == u'DONE'
+        elapsed_time = time() - start_time
 
-        # raise exceptions if timeout
-        if not complete:
-            raise RuntimeError('Job timed out.')
+    # raise exceptions if timeout
+    if not complete:
+        raise RuntimeError('Job timed out.')
 
-        return job_resource
+    return job_resource
 
-            
-class Mask_Printing():
+
+class Mask_Printing(object):
 
     '''
     Defines a context manager for masking printing of all functions within the context scope

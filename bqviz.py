@@ -56,7 +56,7 @@ def _gridplot(bqdf):
 def plot_matrix(plotdf, axislabels=True, ax=None):
     '''plots a heatmap for a matrix (e.g. for confusion matrices or contingency matrices'''
     if ax is None:
-        f, ax = plt.subplots(figsize=[4,4])
+        f, ax = plt.subplots(figsize=[4, 4])
     ax.pcolor(plotdf.values, cmap='hot')
     ax.set_yticks(np.arange(len(plotdf.index)) + .5)
     ax.set_xticks(np.arange(len(plotdf.columns)) + .5)

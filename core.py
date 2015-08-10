@@ -130,7 +130,7 @@ def create_column_from_values(con, col, content, remotetable, length=None):
         content = [content for i in range(length)]
     df = pd.DataFrame({col: content})
     con, dest = write_df_to_remote(
-        con, d['projectId'], d['datasetId'], d['tableId'], df)
+        con, df, overwrite_method='fail', projectId=d['projectId'], datasetId=d['datasetId'], tableId=d['tableId'])
     return dest
 
 
@@ -159,7 +159,7 @@ def write_df_to_remote(con, df, overwrite_method='fail', projectId=None, dataset
     return con, util.stringify(table_ref)
 
 
-class Connection():
+class Connection(object):
 
     '''connects to a bigquery client for the provided project_id
 
@@ -171,19 +171,19 @@ class Connection():
     '''
 
     def __init__(self, project_id=None, logging_file=None, cache_max=cfg.CACHE_MAX):
-        self.project_id=project_id
-        self.logging_file=logging_file
-        self.querycache={}
-        self.cache_max=cache_max
+        self.project_id = project_id
+        self.logging_file = logging_file
+        self.querycache = {}
+        self.cache_max = cache_max
         if cache_max is None:
-            self.cache_max=cfg.CACHE_MAX
-        self.client=bq.Client.Get()
-        self.client.project_id=project_id
-        self.client._apiclient=get_service()
+            self.cache_max = cfg.CACHE_MAX
+        self.client = bq.Client.Get()
+        self.client.project_id = project_id
+        self.client._apiclient = get_service()
 
     def create_table(self, project_id, dataset_id, table_id, df, df_obj):
-        _, table=write_df_to_remote(
-            self, project_id, dataset_id, table_id, df)
+        _, table = write_df_to_remote(
+            self, df, overwrite_method='fail', projectId=project_id, datasetId=dataset_id, tableId=table_id)
         return df_obj(self, table)
 
     def view_log(self):
@@ -196,14 +196,14 @@ class Connection():
         if self.cache_max > 0:
             while float(asizeof(self.querycache)) / 1048576 >= self.cache_max:
                 del self.querycache[self.querycache.keys()[0]]
-            self.querycache[querystr]={}
-            self.querycache[querystr]['local']=df
-            self.querycache[querystr]['source']=source
-            self.querycache[querystr]['fetched']=fetch
-            self.querycache[querystr]['timestamp']=time.time()
+            self.querycache[querystr] = {}
+            self.querycache[querystr]['local'] = df
+            self.querycache[querystr]['source'] = source
+            self.querycache[querystr]['fetched'] = fetch
+            self.querycache[querystr]['timestamp'] = time.time()
 
     def flush_cache(self):
-        self.querycache={}
+        self.querycache = {}
 
     # Broken and low priority
     '''
@@ -260,12 +260,12 @@ class Connection():
             projectids (list): list of projectids associated with the service
         """
         try:
-            projects=self.client._apiclient.projects()
-            list_reply=projects.list().execute()
-            projectids=[]
+            projects = self.client._apiclient.projects()
+            list_reply = projects.list().execute()
+            projectids = []
             if 'projects' in list_reply:
                 print 'Project list:'
-                projects=list_reply['projects']
+                projects = list_reply['projects']
                 for p in projects:
                     projectids.append(p['id'])
                     print "%s: %s" % (p['friendlyName'], p['id'])
@@ -286,13 +286,13 @@ class Connection():
             datasetids (list): list of datasetids associated with the project
         """
         try:
-            datasets=self.client._apiclient.datasets()
-            list_reply=datasets.list(projectId=project).execute()
-            datasetids=[]
+            datasets = self.client._apiclient.datasets()
+            list_reply = datasets.list(projectId=project).execute()
+            datasetids = []
             if 'datasets' in list_reply:
 
                 print 'Dataset list:'
-                datasets=list_reply['datasets']
+                datasets = list_reply['datasets']
                 for d in datasets:
                     print d['datasetReference']['datasetId']
                     datasetids.append(d['datasetReference']['datasetId'])
@@ -314,13 +314,13 @@ class Connection():
             tableids (list): list of tableids associated with the project
         """
         try:
-            tables=self.client._apiclient.tables()
-            list_reply=tables.list(
+            tables = self.client._apiclient.tables()
+            list_reply = tables.list(
                 projectId=project, datasetId=dataset).execute()
-            tableids=[]
+            tableids = []
             if 'tables' in list_reply:
                 print 'Tables list:'
-                tables=list_reply['tables']
+                tables = list_reply['tables']
                 for t in tables:
                     print t['tableReference']['tableId']
                     tableids.append(t['tableReference']['tableId'])
@@ -338,12 +338,12 @@ class Connection():
                                                tableId=tableid).execute()
 
     def create_table(self, projectid, datasetit, tableid, schema):
-        dataset_ref={'datasetId': dataset_id,
+        dataset_ref = {'datasetId': dataset_id,
                        'projectId': project_id}
-        table_ref={'tableId': table_id,
+        table_ref = {'tableId': table_id,
                      'datasetId': dataset_id,
                      'projectId': project_id}
-        table={"kind": "bigquery#table",
+        table = {"kind": "bigquery#table",
                  'tableReference': table_ref, 'schema': {'fields': schema}}
         con.client._apiclient.tables().insert(
             body=table, **dataset_ref).execute()
