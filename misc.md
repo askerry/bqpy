@@ -3,6 +3,8 @@
 ###Pricing
 storage: $0.08/GB/month
 streaming inserts: $0.01 per 200 MB (individual rows count as minimum of 1 KB)
+queries: 1/2 cent per GB
+see also https://cloud.google.com/products/calculator/
 
 ####FYIs
 

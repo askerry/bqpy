@@ -12,6 +12,7 @@ import sys
 import itertools
 import util
 import bqviz
+from time import time, sleep
 import cfg
 import warnings
 import copy
@@ -20,7 +21,7 @@ import bq
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
-from core import run_query, fetch_query, Connection, create_column_from_values, bqresult_2_df
+from core import run_query, fetch_query, Connection, create_column_from_values, bqresult_2_df, write_df_to_remote, get_table_resource
 
 
 # TODO: think about (and communicate to user about) efficiency/pricing
@@ -90,7 +91,8 @@ class BQDF():
             new_bqdf.local = output
             new_bqdf.fetched = fetch
         if exceeds_max:
-            print "Number of rows in remote table exceeds bqdf object's max_rows. Only max_rows have been fetched locally"
+            pass #TODO figure how why exceeds_max isn't behaving as expected
+            #print "Number of rows in remote table exceeds bqdf object's max_rows. Only max_rows have been fetched locally"
         return new_bqdf
 
     def replace(self, column=None, content=1):
@@ -129,16 +131,16 @@ class BQDF():
         if not inplace:
             return df
 
-    def add_col(self, columns, content=1, replace=False):
-        if column in self.columns:
-            raise NameError("%s is already a column in table" % column)
-
     def slice(self, start=0, end=10):
-        fields, data = con.client.ReadSchemaAndRows(
+        fields, data = self.con.client.ReadSchemaAndRows(
             util.dictify(self.remote), start_row=start, max_rows=end - start)
-        ndf = bqresult_2_df(fields, data, fetch=True).local
-        ndf.remote = ndf.remote + '_slice_%sto%s' % (start, end)
-        _ = write_df_to_remote(self.con, ndf.remote, ndf)
+        ndf = bqresult_2_df(fields, data)
+        dest = self.remote + '_slice_%sto%s' % (start, end)
+        _ = write_df_to_remote(self.con, ndf, **util.dictify(dest))
+        if not self.check_write(dest):
+            warnings.warn('failed to write new slice to bigquery')
+        ndf = BQDF(self.con, dest)
+        ndf.refresh()
         return ndf
 
     def save(self, project_id, dataset_id, table_id):
@@ -198,23 +200,29 @@ class BQDF():
         ndf = self.query(grouping_query, fetch=fetch, dest=dest)
         return ndf
 
-    def apply(self, col, func, columns=None, max_rows=cfg.MAX_ROWS, fetch=True, dest=None, chunksize=1000):
+    def apply(self, func, col=None, columns=None, max_rows=cfg.MAX_ROWS, fetch=True, dest=None, chunksize=1000):
         '''idea is to (in a majorly hacky way) allow arbitrary python "udfs" but pulling each row locally and applying the python function, then writing back to bq'''
-        # TODO make work and allow user to provide arguments
+        # TODO make work and allow user to provide arguments to function
+        if col is None:
+            col=self.active_col
         startrow = 0
         # TODO less hacky way to wait for this job to run: maybe see
         # client.wait_for_job in https://github.com/tylertreat/BigQuery-Python
-        while startrow + chunksize < len(self):
-            startrow += chunksize
-            fields, data = con.client.ReadSchemaAndRows(
+        while startrow  < len(self):
+            fields, data = self.con.client.ReadSchemaAndRows(
                 util.dictify(self.remote), start_row=startrow, max_rows=chunksize)
             ndf = bqresult_2_df(fields, data)
-            ndf[col + 'mod'] = ndf.apply(func)
+            ndf[col + '_mod'] = ndf[col].apply(func)
             if dest is None:
-                dest = ndf.remote + '_mod_%s' % col
-            write_df_to_remote(self.con, remotedest, ndf)
-        combined_df = BQDF(self.con, '%s' % remotedest)
+                dest = self.remote + '_mod_%s' % col
+            ndf=ndf[[col+'_mod']]
+            _, _ = write_df_to_remote(self.con, ndf, overwrite_method='append', **util.dictify(dest))
+            startrow += chunksize
+        if not self.check_write(dest):
+            warnings.warn('remote writing of UDF apply function failed')
+        combined_df = BQDF(self.con, dest)
         return combined_df
+
 
     def groupby_apply(self, groupingcol, func, columns=None, max_rows=cfg.MAX_ROWS, fetch=True, dest=None):
         ''' same as apply (python udf hack) but for groups analogous to df.groupby('col').apply(myfunc)
@@ -234,13 +242,17 @@ class BQDF():
             group_query = "SELECT %s FROM %s WHERE  %s == %s" (
                 ', '.join(columns), self.tablename, groupingcol, group)
             ndf = self.query(group_query, fetch=True, dest=dest)
-            applied_ndf = func(ndf)
+            applied_ndf = func(ndf.local)
             if dest is None:
                 gdf = self.query(group_query, fetch=True, dest=None)
                 dest = gdf.remote
-            write_df_to_remote(self.con, dest, applied_ndf)
+            _,_ = write_df_to_remote(self.con, applied_ndf, overwrite_method='append', **util.dictify(dest))
+        if not self.check_write(dest):
+            warnings.warn('remote writing of UDF groupby-apply function failed')
         gdf = BQDF(self.con, '%s' % dest)
         return gdf
+       
+       
 
     def join(self, df2, on=None, left_on=None, right_on=None, how='LEFT', dest=None, inplace=True):
         '''joins table with table referenced in df2 and optionally returns result'''
@@ -453,7 +465,7 @@ class BQDF():
                          (col, self.tablename), fetch=fetch, fill=False)
         return ndf
 
-    def replace(self, string_to_replace, replacement_string, col=None):
+    def replace_str(self, string_to_replace, replacement_string, col=None):
         '''replace string_to_replace with replacement_string'''
         if col is None:
             col = self.active_col
@@ -761,7 +773,14 @@ class BQDF():
 
     def __len__(self):
         '''length of table (# of rows)'''
-        return int(self.resource['numRows'])
+        try:
+            return int(self.resource['numRows'])
+        except KeyError:
+            with util.Mask_Printing():
+                output, source, exceeds_max = raw_query(self.con, 'SELECT COUNT(*) FROM %s' %self.tablename, self.last_modified)
+            return output.values[0][0]
+            
+            
 
     def footprint(self):
         '''check size of table'''
@@ -817,14 +836,22 @@ class BQDF():
                 self.con, column, content, self.remote, length=length)
         return newremote, length
 
-    def _query_newly_created(self, newremote, length):
+    def check_write(self, newremote, timeout=10):
         '''query from a newly created table (waits until table has been fully inserted)'''
-        newquery = 'SELECT ROW_NUMBER() OVER() index, * from %s' % newremote
-        newdf = []
-        while len(newdf) < length:
-            newdf = self.query(newquery, fetch=False)
-        return newdf
-
+        loaded = False
+        start_time = time()
+        elapsed_time = 0
+        while not loaded:
+            if elapsed_time < timeout:
+                resource = get_table_resource(self.con.client._apiclient, util.dictify(newremote))
+                if 'numRows' in resource: #won't contain this attribute while actively streaming insertions
+                    if int(resource['numRows'])>0:
+                        return True
+                elapsed_time = time() - start_time
+                sleep(.5)
+            else:
+                return False
+    
     def _set_active_col(self, col):
         '''sets the "active column" to use for subsequent operation'''
         self.active_col = col
@@ -880,7 +907,7 @@ class BQDF():
             dest = self.remote
         else:
             dest = None
-        df, _, _ = raw_query(self.con, querystr, self.last_modified,dest=dest, overwrite_method='WRITE_TRUNCATE', fetch=self.fetched)
+        df, _, _ = raw_query(self.con, querystr, self.last_modified,dest=dest, overwrite_method='overwrite', fetch=self.fetched)
         return df
 
 
