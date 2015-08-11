@@ -14,9 +14,9 @@ from pybq import credentialscfg as cred
 con = bqdf.Connection(project_id=cred.project_id, logging_file=cred.log)
 df = bqdf.BQDF(con, 'lomulation:temp.stats_reference')
 
-testdata = pd.read_csv('stats_reference.csv')[
+testdata = pd.read_csv('natality.csv')[
     ['weight_pounds', 'month', 'day', 'mother_age', 'state']].dropna()
-fulldata = pd.read_csv('stats_reference.csv')[
+fulldata = pd.read_csv('natality.csv')[
     ['weight_pounds', 'month', 'day', 'mother_age', 'state']]
 numeric1 = 'weight_pounds'
 numeric2 = 'mother_age'

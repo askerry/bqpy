@@ -101,20 +101,7 @@ def bqresult_2_df(fields, data):
     return df
 
 
-def get_service():
-    """returns an initialized and authorized bigquery client"""
-    credentials = GoogleCredentials.get_application_default()
-    if credentials.create_scoped_required():
-        credentials = credentials.create_scoped(
-            'https://www.googleapis.com/auth/bigquery')
-    return build('bigquery', 'v2', credentials=credentials)
 
-
-def get_table_resource(service, requestedtable):
-    if isinstance(requestedtable, str):
-        return service.tables().get(**util.dictify(requestedtable)).execute()
-    else:
-        return service.tables().get(**requestedtable).execute()
 
 
 def create_column_from_values(con, col, content, remotetable, length=None):
@@ -133,8 +120,16 @@ def create_column_from_values(con, col, content, remotetable, length=None):
         con, df, overwrite_method='fail', projectId=d['projectId'], datasetId=d['datasetId'], tableId=d['tableId'])
     return dest
 
+#option one: streaming insert -- but note there are various constraints:
+#Maximum row size: 20 KB
+#Maximum data size of all rows, per insert: 1 MB
+#Maximum rows per second: 10,000 rows per second, per table
+#Maximum rows per request: 500
+#Maximum bytes per second: 10 MB per second, per table.
+#Streaming: $0.01 per 100K rows streamed (after 01.01.2015)
 
-def write_df_to_remote(con, df, overwrite_method='fail', projectId=None, datasetId=None, tableId=None):
+
+def stream_df_to_remote(con, df, overwrite_method='fail', projectId=None, datasetId=None, tableId=None):
     '''write pandas dataframe as bigquery table'''
     schema = {"fields": util.bqjson_from_df(df, dumpjson=False)}
     dataset_ref = {'datasetId': datasetId,
@@ -153,9 +148,38 @@ def write_df_to_remote(con, df, overwrite_method='fail', projectId=None, dataset
     for i, row in df.iterrows():
         jsondata = {col: row[col] for col in df.columns}
         datarows.append({"json": jsondata})
+    
     body = {'kind': 'bigquery#tableDataInsertAllRequest', 'rows': datarows}
     update = con.client._apiclient.tabledata().insertAll(
         body=body, **table_ref).execute()
+    return con, util.stringify(table_ref)
+
+def write_df_to_remote(con, df, overwrite_method='fail',delete='True', name=None, projectId=None, datasetId=None, tableId=None):
+    '''write pandas dataframe as bigquery table'''
+    schema = {"fields": util.bqjson_from_df(df, dumpjson=False)}
+    table_ref = {'tableId': tableId,
+                 'datasetId': datasetId,
+                 'projectId': projectId}
+    if overwrite_method == 'append':
+        write_disposition = 'WRITE_APPEND'
+    elif overwrite_method == 'overwrite':
+        write_disposition = 'WRITE_TRUNCATE'
+    else:
+        write_disposition = 'WRITE_EMPTY'
+    df.to_csv(tableId+'.csv', index=False)
+    filename=os.path.join(os.getcwd(), tableId+'.csv')
+    project=util.dictify(self.remote)['projectId']
+    if name is None:
+        name= datasetId+tableId
+    util.file_to_bucket(con.client._storageclient, project, self.bucket, filename, name=name)
+    loadjob = {'destinationTable':table_ref, 'schema':schema, 'writeDisposition':write_disposition, 'sourceUris':['gs://%s/%s' %(bucket, name)], 'skipLeadingRows':1}
+    jobbody = {'configuration':{'load':loadjob}}
+    updatejob= con.client._apiclient.jobs().insert(projectId=projectId, body=jobbody).execute()
+    status='PENDING'
+    while status != 'DONE':
+        status = con.client._apiclient.jobs().get(**updatejob['jobReference']).execute()['status']['state']
+    if delete:
+        delete_from_bucket(con.client._storageclientt, project, bucket, name)
     return con, util.stringify(table_ref)
 
 
@@ -179,7 +203,8 @@ class Connection(object):
             self.cache_max = cfg.CACHE_MAX
         self.client = bq.Client.Get()
         self.client.project_id = project_id
-        self.client._apiclient = get_service()
+        self.client._apiclient = util.get_bq_service()
+        self.client._storageclient = util.get_storage_service()
 
     def create_table(self, project_id, dataset_id, table_id, df, df_obj):
         _, table = write_df_to_remote(

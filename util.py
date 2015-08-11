@@ -13,6 +13,12 @@ import os
 import numpy as np
 import cfg
 sys.path.append(cfg.gsdk_path)
+from bq import apiclient
+from apiclient import googleapiclient, oauth2client
+import googleapiclient.discovery
+import oauth2client.client
+from googleapiclient.discovery import build
+from oauth2client.client import GoogleCredentials
 
 
 def _log_query(client, query_response):
@@ -76,6 +82,45 @@ def wait_for_job(project_id, job, interval=5, timeout=60):
         raise RuntimeError('Job timed out.')
 
     return job_resource
+
+
+def get_bq_service():
+    """returns an initialized and authorized bigquery client"""
+    credentials = GoogleCredentials.get_application_default()
+    if credentials.create_scoped_required():
+        credentials = credentials.create_scoped(
+            'https://www.googleapis.com/auth/bigquery')
+    return build('bigquery', 'v2', credentials=credentials)
+
+def get_storage_service():
+    """returns an initialized and authorized bigquery client"""
+    credentials = GoogleCredentials.get_application_default()
+    if credentials.create_scoped_required():
+        credentials = credentials.create_scoped(
+            'https://www.googleapis.com/auth/bigquery')
+    return build('storage', 'v1', credentials=credentials)
+
+
+def get_table_resource(service, requestedtable):
+    if isinstance(requestedtable, str):
+        return service.tables().get(**util.dictify(requestedtable)).execute()
+    else:
+        return service.tables().get(**requestedtable).execute()
+
+
+def delete_from_bucket(storage_client, project, bucket, name):
+    response = storage_client.objects().delete(
+        bucket=bucket,
+        object=name).execute()
+
+
+def file_to_bucket(storage_client, project, bucket, filename, name=None, contenttype='text/plain'):
+    object_resource = {'contentType': contenttype}
+    response = storage_client.objects().insert(bucket=bucket,
+                                               name=name,
+                                               body=object_resource,
+                                               media_body=filename).execute()
+    return response
 
 
 class Mask_Printing(object):
@@ -150,7 +195,7 @@ def bqjson_from_sql_schema(cursor, tablename, dumpjson=True):
             ''.join([char for char in line[1].lower() if char.isalpha()])]
         mode = False
         if line[2] == 'NO':
-            mode = "REQUIRED"
+            mode = "NULLABLE"
         d = {"name": line[0], 'type': datatype}
         if mode:
             d['mode'] = mode
@@ -172,7 +217,7 @@ def bqjson_from_csv(con, csvpath, dumpjson=True):
         line = line.strip().split(' ')
         datatype = sql2bqmapping[
             ''.join([char for char in line[1].lower() if char.isalpha()])]
-        mode = "REQUIRED"
+        mode = "NULLABLE"
         if len(line) > 2 and line[3] == 'NULL':
             mode = False
         d = {"name": line[0], 'type': datatype}
@@ -192,7 +237,7 @@ def bqjson_from_df(df, dumpjson=True):
     for col in df.columns:
         dtype = df[col].dtype
         datatype = df2bqmapping[dtype]
-        mode = "REQUIRED"
+        mode = "NULLABLE"
         if len(df.columns) > 2 and df.columns[3] == 'NULL':
             mode = False
         d = {"name": col, 'type': datatype}

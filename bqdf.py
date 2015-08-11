@@ -15,18 +15,28 @@ import bqviz
 from time import time, sleep
 import cfg
 import warnings
+import scipy.stats
 import copy
 sys.path.append(cfg.gsdk_path)
 import bq
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
-from core import run_query, fetch_query, Connection, create_column_from_values, bqresult_2_df, write_df_to_remote, get_table_resource
+from core import run_query, fetch_query, Connection, create_column_from_values, bqresult_2_df, write_df_to_remote
 
 
-# TODO: think about (and communicate to user about) efficiency/pricing
-# tradeoffs this approach makes
-# - NOTE:  in many cases, what could be a larger(and possibly more efficient) single query is broken down into intermediate steps. But this can in principle have an efficiency advantage since the intermediate computations(e.g. a mean of some column) can be cached and reused for different higher level operations. Need to understand pricing specifics more to optimize this.
+# TODO:
+
+# think about (and communicate to user about) efficiency/pricing tradeoffs
+# this approach makes. in many cases, what could be a larger(and possibly
+# more efficient) single query is broken down into intermediate steps. But
+# this can in principle have an efficiency advantage since the
+# intermediate computations(e.g. a mean of some column) can be cached and
+# reused for different higher level operations. Need to understand pricing
+# specifics more to optimize this.
+
+# don't allow pandas column names that will cause trouble in the bq query
+# (no commas, any other constraints?)
 
 ##########################################################################
 # ####################### BigQuery DataFrame Class #######################
@@ -39,7 +49,7 @@ class BQDF(object):
     to basic features of the table. Aims to replicate some of the basic functionality
     of pandas dataframe operations and interfacing for return data in df form'''
 
-    def __init__(self, con, tablename, max_rows=cfg.MAX_ROWS, fill=True):
+    def __init__(self, con, tablename, max_rows=cfg.MAX_ROWS, fill=True, bucket=cfg.bucket):
         '''initialize a reference to table'''
         self.con = con
         self.tablename = '[%s]' % tablename
@@ -51,6 +61,7 @@ class BQDF(object):
         self.fetched = False
         self.active_col = None
         self.local = None
+        self.bucket = bucket
         self.hidden = []
         if fill:
             self.resource = self.get_resource(self.remote)
@@ -555,13 +566,40 @@ class BQDF(object):
         pass
 
     def chi_square(self, col1, col2):
-        pass
+        col1levels = self[col1].unique()
+        col2levels = self[col2].unique()
+        df = (len(col1levels) - 1) * (len(col2levels) - 1)
+        n = len(self)
+        combos = []
+        chi = 0
+        for c1 in col1levels:
+            for c2 in col2levels:
+                if (c1, c2) not in combos:
+                    combos.append(c1, c2)
+        for level1, level2 in combos:
+            n1 = len(self.where('%s = %s' % (col1, level1), columns=[col1]))
+            n2 = len(self.where('%s = %s' % (col2, level2), columns=[col2]))
+            expected = (n1 * n2) / n
+            observed = len(
+                self.where('%s==%s' % (col1, level1), '%s==%s' % (col2, level2), columns=[col1]))
+            new = ((observed - expected) ** 2) / expected
+            chi += new
+        pval = 2 * (1 - (scipy.stats.chi_2.cdf(chi, df)))
+        return chi, df, pval
 
-    def binomial(self, col, p=.5):
-        pass
+    def binomial(self, col, success=1, p=.5):
+        successes = self.where('%s = %s' % (col, success))
+        n = len(successes)
+        k = len(self)
+        pval = scipy.stats.binom_test(n, k, p)
+        return float(n) / k, pval
 
     def pearsonr(self, col1, col2):
-        pass
+        r = self.corr(col1, col2)
+        df = n - 2
+        t = r * sqrt(df) / sqrt(1 - r ^ 2)
+        pval = 2 * (1 - (scipy.stats.t.cdf(r, df)))
+        return r, df, pval
 
     def onewayanova(self, valuecol, factor):
         pass
@@ -573,8 +611,15 @@ class BQDF(object):
         pass
 
     def linear_regression(self, y, xcols):
-        pass
+        if len(xcols) == 1:
+            output = _simple_linear_regression(y, x)
 
+        return ouput
+
+    def _simple_linear_regression(y, x):
+        querystr = "SELECT (AVG(x*y) - AVG(x)*AVG(y))/VARIANCE(X) as slope, AVG(y) - ((AVG(x*y) - AVG(x)*AVG(y))/VARIANCE(X)) * AVG(x) as intercept"
+        ndf = self.query(querystr, fetch=False)
+        return ndf
 
 ########################################
 # #####  DATETIME FUNCTIONALITY  #######
@@ -833,7 +878,7 @@ class BQDF(object):
         elapsed_time = 0
         while not loaded:
             if elapsed_time < timeout:
-                resource = get_table_resource(
+                resource = util.get_table_resource(
                     self.con.client._apiclient, util.dictify(newremote))
                 # won't contain this attribute while actively streaming
                 # insertions

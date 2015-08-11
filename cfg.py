@@ -9,3 +9,4 @@ FETCH_BY_DEFAULT = False
 # that modify table unless you mean to
 WRITEABLE = True
 WRITE_ACCESS = []
+STORAGE_BUCKET = 'loml'
