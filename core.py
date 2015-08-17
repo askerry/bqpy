@@ -101,9 +101,6 @@ def bqresult_2_df(fields, data):
     return df
 
 
-
-
-
 def create_column_from_values(con, col, content, remotetable, length=None):
     '''create new dataframe with column content (which can then be joined with existing table)'''
     d = util.dictify(remotetable)
@@ -120,13 +117,24 @@ def create_column_from_values(con, col, content, remotetable, length=None):
         con, df, overwrite_method='fail', projectId=d['projectId'], datasetId=d['datasetId'], tableId=d['tableId'])
     return dest
 
-#option one: streaming insert -- but note there are various constraints:
-#Maximum row size: 20 KB
-#Maximum data size of all rows, per insert: 1 MB
-#Maximum rows per second: 10,000 rows per second, per table
-#Maximum rows per request: 500
-#Maximum bytes per second: 10 MB per second, per table.
-#Streaming: $0.01 per 100K rows streamed (after 01.01.2015)
+# option one: streaming insert -- but note there are various constraints:
+# Maximum row size: 20 KB
+# Maximum data size of all rows, per insert: 1 MB
+# Maximum rows per second: 10,000 rows per second, per table
+# Maximum rows per request: 500
+# Maximum bytes per second: 10 MB per second, per table.
+# Streaming: $0.01 per 100K rows streamed (after 01.01.2015)
+
+
+def write_df_to_remote(con, df, projectId=None, datasetId=None, tableId=None, overwrite_method='fail', method=None, name=None, delete='True', thresh=5):
+    if method is None:
+        size = (df.values.bytes + df.columns.bytes + df.index.bytes) / 1048576
+        if size > thresh:
+            batch_df_to_remote(con, df, overwrite_method='fail', delete='True',
+                               name=None, projectId=None, datasetId=None, tableId=None)
+        else:
+            stream_df_to_remote(
+                con, df, overwrite_method='fail', projectId=None, datasetId=None, tableId=None)
 
 
 def stream_df_to_remote(con, df, overwrite_method='fail', projectId=None, datasetId=None, tableId=None):
@@ -148,13 +156,14 @@ def stream_df_to_remote(con, df, overwrite_method='fail', projectId=None, datase
     for i, row in df.iterrows():
         jsondata = {col: row[col] for col in df.columns}
         datarows.append({"json": jsondata})
-    
+
     body = {'kind': 'bigquery#tableDataInsertAllRequest', 'rows': datarows}
     update = con.client._apiclient.tabledata().insertAll(
         body=body, **table_ref).execute()
     return con, util.stringify(table_ref)
 
-def write_df_to_remote(con, df, overwrite_method='fail',delete='True', name=None, projectId=None, datasetId=None, tableId=None):
+
+def batch_df_to_remote(con, df, overwrite_method='fail', delete='True', name=None, projectId=None, datasetId=None, tableId=None):
     '''write pandas dataframe as bigquery table'''
     schema = {"fields": util.bqjson_from_df(df, dumpjson=False)}
     table_ref = {'tableId': tableId,
@@ -166,20 +175,16 @@ def write_df_to_remote(con, df, overwrite_method='fail',delete='True', name=None
         write_disposition = 'WRITE_TRUNCATE'
     else:
         write_disposition = 'WRITE_EMPTY'
-    df.to_csv(tableId+'.csv', index=False)
-    filename=os.path.join(os.getcwd(), tableId+'.csv')
-    project=util.dictify(self.remote)['projectId']
+    df.to_csv(tableId + '.csv', index=False)
+    filename = os.path.join(os.getcwd(), tableId + '.csv')
+    project = util.dictify(self.remote)['projectId']
     if name is None:
-        name= datasetId+tableId
-    util.file_to_bucket(con.client._storageclient, project, self.bucket, filename, name=name)
-    loadjob = {'destinationTable':table_ref, 'schema':schema, 'writeDisposition':write_disposition, 'sourceUris':['gs://%s/%s' %(bucket, name)], 'skipLeadingRows':1}
-    jobbody = {'configuration':{'load':loadjob}}
-    updatejob= con.client._apiclient.jobs().insert(projectId=projectId, body=jobbody).execute()
-    status='PENDING'
-    while status != 'DONE':
-        status = con.client._apiclient.jobs().get(**updatejob['jobReference']).execute()['status']['state']
+        name = datasetId + tableId
+    util.file_to_bucket(con, project, self.bucket, filename, name=name)
+    jobref = bucket_to_bq(con, table_ref, projectId, bucket, name,
+                          schema=schema, write_disposition=write_disposition, wait=True)
     if delete:
-        delete_from_bucket(con.client._storageclientt, project, bucket, name)
+        delete_from_bucket(con, project, bucket, name)
     return con, util.stringify(table_ref)
 
 
@@ -203,8 +208,8 @@ class Connection(object):
             self.cache_max = cfg.CACHE_MAX
         self.client = bq.Client.Get()
         self.client.project_id = project_id
-        self.client._apiclient = util.get_bq_service()
-        self.client._storageclient = util.get_storage_service()
+        self.client._apiclient = util.get_bq_client()
+        self.client._storageclient = util.get_storage_client()
 
     def create_table(self, project_id, dataset_id, table_id, df, df_obj):
         _, table = write_df_to_remote(
@@ -252,7 +257,7 @@ class Connection(object):
                     for t in all_tables:
                         if d['tableReference']['tableId']in tables:
                             resource = get_table_resource(
-                                self.service, {'projectId': p, 'datasetId': d, 'tableId': t})
+                                self.con, {'projectId': p, 'datasetId': d, 'tableId': t})
                             existed_dur = datetime.datetme.now(
                             ) - util.convert_timestamp(resource['creationTime'])
                             days = float(existed_dur) / 60 / 60 / 24

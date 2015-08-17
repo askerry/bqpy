@@ -46,45 +46,22 @@ def _log_query(client, query_response):
             f.write(logline)
 
 
-def wait_for_job(project_id, job, interval=5, timeout=60):
-    """
-    Waits until the job indicated by job_resource is done or has failed
-    Args:
-        job: dict, representing a BigQuery job resource
-             or str, representing a BigQuery job id
-        interval: optional float polling interval in seconds, default = 5
-        timeout: optional float timeout in seconds, default = 60
-    Returns:
-        dict, final state of the job_resource, as described here:
-        https://developers.google.com/resources/api-libraries/documentation
-        /bigquery/v2/python/latest/bigquery_v2.jobs.html#get
-    Raises:
-        JobExecutingException on http/auth failures or error in result
-        BigQueryTimeoutException on timeout
-    """
-    complete = False
-    job_id = str(job if isinstance(job,
-                                   (six.binary_type, six.text_type, int))
-                 else job['jobReference']['jobId'])
-    job_resource = None
-
-    start_time = time()
+def wait_for_job(jobref, interval=2, timeout=60):
+    status = 'PENDING'
     elapsed_time = 0
     while not (complete or elapsed_time > timeout):
         sleep(interval)
-        job_resource = self.bigquery.jobs().get(projectId=project_id,
-                                                jobId=job_id).execute()
-        complete = job_resource.get('status').get('state') == u'DONE'
-        elapsed_time = time() - start_time
+        while status != 'DONE':
+            status = con.client._apiclient.jobs().get(
+                **updatejob['jobReference']).execute()['status']['state']
 
-    # raise exceptions if timeout
-    if not complete:
+            elapsed_time = time() - start_time
+
+    if status != 'DONE':
         raise RuntimeError('Job timed out.')
 
-    return job_resource
 
-
-def get_bq_service():
+def get_bq_client():
     """returns an initialized and authorized bigquery client"""
     credentials = GoogleCredentials.get_application_default()
     if credentials.create_scoped_required():
@@ -92,7 +69,8 @@ def get_bq_service():
             'https://www.googleapis.com/auth/bigquery')
     return build('bigquery', 'v2', credentials=credentials)
 
-def get_storage_service():
+
+def get_storage_client():
     """returns an initialized and authorized bigquery client"""
     credentials = GoogleCredentials.get_application_default()
     if credentials.create_scoped_required():
@@ -101,26 +79,49 @@ def get_storage_service():
     return build('storage', 'v1', credentials=credentials)
 
 
-def get_table_resource(service, requestedtable):
+def get_table_resource(con, requestedtable):
     if isinstance(requestedtable, str):
-        return service.tables().get(**util.dictify(requestedtable)).execute()
+        return con.client._apiclient.tables().get(**util.dictify(requestedtable)).execute()
     else:
-        return service.tables().get(**requestedtable).execute()
+        return con.client._apiclient.tables().get(**requestedtable).execute()
 
 
-def delete_from_bucket(storage_client, project, bucket, name):
-    response = storage_client.objects().delete(
+def delete_from_bucket(con, project, bucket, name):
+    response = con.client.storage_client.objects().delete(
         bucket=bucket,
         object=name).execute()
 
 
-def file_to_bucket(storage_client, project, bucket, filename, name=None, contenttype='text/plain'):
+def file_to_bucket(con, project, bucket, filename, name=None, contenttype='text/plain'):
     object_resource = {'contentType': contenttype}
-    response = storage_client.objects().insert(bucket=bucket,
-                                               name=name,
-                                               body=object_resource,
-                                               media_body=filename).execute()
+    response = con.client.storage_client.objects().insert(bucket=bucket,
+                                                          name=name,
+                                                          body=object_resource,
+                                                          media_body=filename).execute()
     return response
+
+
+def bucket_to_bq(con, table_ref, project, bucket, name, schema=None, write_disposition='fail', async=False):
+    # TODO: deal with nan vs NULL vs. empy cell
+    loadjob = {'destinationTable': table_ref, 'schema': schema, 'writeDisposition':
+               write_disposition, 'sourceUris': ['gs://%s/%s' % (bucket, name)], 'skipLeadingRows': 1}
+    jobbody = {'configuration': {'load': loadjob}}
+    updatejob = con.client._apiclient.jobs().insert(
+        projectId=project, body=jobbody).execute()
+    if not async:
+        wait_for_job(updatejob['jobReference'])
+    return updatejob['jobReference']
+
+
+def bq_to_bucket(con, table_ref, project, bucket, name, async=False):
+    extractjob = {'destinationUris[]': ['gs://%s/%s' %
+                                        (bucket, name + '*.csv')], 'sourceTable': table_ref}
+    jobbody = {'configuration': {'extract': extractjob}}
+    updatejob = con.client._apiclient.jobs().extract(
+        projectId=project, body=jobbody).execute()
+    if not async:
+        wait_for_job(updatejob['jobReference'])
+    return updatejob['jobReference']
 
 
 class Mask_Printing(object):
@@ -282,16 +283,3 @@ def connect_cloudsql(cloudname, cloudip):
     cursor = db.cursor()
     print query(cursor, 'show databases')
     return cursor
-
-
-def get_fields(obj):
-    fields = []
-    for attr in dir(obj):
-        if not attr.startswith("_"):
-            try:
-                value = getattr(obj, attr)
-                if not callable(value):
-                    fields.append(attr)
-            except:
-                pass
-    return fields

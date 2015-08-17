@@ -27,16 +27,17 @@ from core import run_query, fetch_query, Connection, create_column_from_values, 
 
 # TODO:
 
-# think about (and communicate to user about) efficiency/pricing tradeoffs
-# this approach makes. in many cases, what could be a larger(and possibly
+# don't allow pandas column names that will cause trouble in the bq query
+# (no commas, any other constraints?)
+
+# think about efficiency/pricing tradeoffs
+# this approach makes. in many cases, what could be a larger (and possibly
 # more efficient) single query is broken down into intermediate steps. But
 # this can in principle have an efficiency advantage since the
 # intermediate computations(e.g. a mean of some column) can be cached and
 # reused for different higher level operations. Need to understand pricing
 # specifics more to optimize this.
 
-# don't allow pandas column names that will cause trouble in the bq query
-# (no commas, any other constraints?)
 
 ##########################################################################
 # ####################### BigQuery DataFrame Class #######################
@@ -49,7 +50,7 @@ class BQDF(object):
     to basic features of the table. Aims to replicate some of the basic functionality
     of pandas dataframe operations and interfacing for return data in df form'''
 
-    def __init__(self, con, tablename, max_rows=cfg.MAX_ROWS, fill=True, bucket=cfg.bucket):
+    def __init__(self, con, tablename, max_rows=cfg.MAX_ROWS, fill=True, bucket=cfg.STORAGE_BUCKET):
         '''initialize a reference to table'''
         self.con = con
         self.tablename = '[%s]' % tablename
@@ -163,7 +164,7 @@ class BQDF(object):
 
     def save(self, project_id, dataset_id, table_id):
         '''copy table (useful for saving a bqdf currently pointing to a temporary table'''
-        pass
+        raise NotImplementedError
 
 
 ########################################
@@ -233,7 +234,7 @@ class BQDF(object):
 
     def groupby_apply(self, groupingcol, func, columns=None, max_rows=cfg.MAX_ROWS, fetch=True, dest=None):
         ''' same as apply (python udf hack) but for groups analogous to df.groupby('col').apply(myfunc)
-        #TODO make work and allow user to provide arguments
+        # TODO make work and allow user to provide arguments
         groups data by grouping column and performs requested operations on other columns
         INPUTS:
             groupingcol (str): column to group on
@@ -301,7 +302,7 @@ class BQDF(object):
         else:
             return ndf
 
-    def dropna(self, dest=None):
+    def dropna(self, dest=None, overwrite_method='fail'):
         filters = ["%s IS NOT NULL" % c for c in self.columns]
         filterstr = ' AND '.join(filters)
         ndf = self.query('SELECT * FROM %s WHERE %s' % (self.tablename, filterstr),
@@ -362,7 +363,7 @@ class BQDF(object):
         contingency_query = "SELECT %s, %s, COUNT(*) count FROM %s GROUP BY %s, %s" % (
             col1, col2, self.tablename, col1, col2)
         ndf = self.query(contingency_query, fetch=True, dest=dest).local
-        return ndf.pivot(col1, col2, 'count')
+        return ndf.unstack(col2)
 
 
 ########################################
@@ -375,7 +376,7 @@ class BQDF(object):
         return ndf
 
     def add(self, col1, col2, fetch=cfg.FETCH_BY_DEFAULT):
-        ndf = self.query('SELECT %s + %s as diff from %s' %
+        ndf = self.query('SELECT %s + %s as sum from %s' %
                          (col1, col2, self.tablename), fetch=fetch, fill=False)
         return ndf
 
@@ -439,7 +440,7 @@ class BQDF(object):
         self._clear_active_col()
         return ndf
 
-    def zscore(self, col=None):
+    def zscore(self, col=None, fetch=cfg.FETCH_BY_DEFAULT):
         '''compute zscore of the column'''
         if col is None:
             col = self.active_col
@@ -448,37 +449,37 @@ class BQDF(object):
         std = self.query('SELECT STDDEV(%s) from %s' %
                          (col, self.tablename), fetch=False).local.iloc[0, 0]
         ndf = self.query('SELECT (%s-%s)/%s zscore from %s' %
-                         (col, avg, std, self.tablename), fetch=False)
+                         (col, avg, std, self.tablename), fetch=fetch)
         self._clear_active_col()
         return ndf
 
-    def lower(self, col=None):
+    def lower(self, col=None, fetch=cfg.FETCH_BY_DEFAULT):
         if col is None:
             col = self.active_col
         ndf = self.query('SELECT LOWER(%s) as lower from %s' %
                          (col, self.tablename), fetch=fetch, fill=False)
         return ndf
 
-    def upper(self, col=None):
+    def upper(self, col=None, fetch=cfg.FETCH_BY_DEFAULT):
         if col is None:
             col = self.active_col
         ndf = self.query('SELECT UPPER(%s) as upper from %s' %
                          (col, self.tablename), fetch=fetch, fill=False)
         return ndf
 
-    def replace_str(self, string_to_replace, replacement_string, col=None):
+    def replace_str(self, string_to_replace, replacement_string, col=None, fetch=cfg.FETCH_BY_DEFAULT):
         '''replace string_to_replace with replacement_string'''
         if col is None:
             col = self.active_col
-        ndf = self.query('SELECT REPLACE(%s, "%s", "%s") as lower from %s' %
+        ndf = self.query('SELECT REPLACE(%s, "%s", "%s") as replace from %s' %
                          (col, string_to_replace, replacement_string, self.tablename), fetch=fetch, fill=False)
         return ndf
 
-    def str_index(self, search_string, col=None):
+    def str_index(self, search_string, col=None, fetch=cfg.FETCH_BY_DEFAULT):
         '''get 1-based index of first occurence of search_string in the column (0 if not present)'''
         if col is None:
             col = self.active_col
-        ndf = self.query('SELECT INSTR(%s, "%s") as lower from %s' %
+        ndf = self.query('SELECT INSTR(%s, "%s") as position from %s' %
                          (col, search_string, self.tablename), fetch=fetch, fill=False)
         return ndf
 
@@ -529,6 +530,9 @@ class BQDF(object):
         self._clear_active_col()
         return ndf.local.iloc[0, 0]
 
+    def median(self, col=None):
+        raise NotImplementedError
+
     def percentiles(self, col=None):
         '''returns 25th, 50th, and 75t percentiles of column'''
         if col is None:
@@ -553,17 +557,40 @@ class BQDF(object):
 
     def ttest_1samp(self, col, nullhypothesis=0):
         #(mean-nullhyp)/(std/sqrt(n))
-        pass
+        ndf = self.query(
+            'SELECT AVG(%s) as mean, STDDEV(%s) as std, COUNT(%s) as n from %s' % (col, col, col, self.tablename), fetch=False)
+        n = ndf.local.ix[0, 'n']
+        t = (ndf.local.ix[0, 'mean'] - nullhypothesis) / \
+            (ndf.local.ix[0, 'std'] / np.sqrt(n))
+        df = n - 1
+        pval = scipy.stats.t.sf(np.abs(t), df) * 2
+        return t, df, pval
 
     def ttest_ind(self, col1, col2):
         # pooled variance ttest
         #(mean_1 - mean_2)/(std_12 * sqrt(1/n_1 +1/n_2))
-        #std_12 = sqrt( ((n1-1)*std_1 + (n2-1)*std_2)/( n_1 + n_2 - 2) )
-        pass
+        # std_12 = sqrt( ((n1-1)*std_1 + (n2-1)*std_2)/( n_1 + n_2 - 2) )
+        ndf = self.query(
+            'SELECT AVG(%s) as mean_1, STDDEV(%s) as std_1, COUNT(%s) as n_1, AVG(%s) as mean_2, STDDEV(%s) as std_2, COUNT(%s) as n_2 from %s' % (col1, col1, col1, col2, col2, col2, self.tablename), fetch=False)
+        df = ndf.local.ix[0, 'n_1'] + ndf.local.ix[0, 'n_2'] - 2
+        std_12 = np.sqrt(((ndf.local.ix[0, 'n_1'] - 1) * ndf.local.ix[0, 'std_1'] + (
+            ndf.local.ix[0, 'n_2'] - 1) * ndf.local.ix[0, 'std_1']) / df)
+        t = (ndf.local.ix[0, 'mean_1'] - ndf.local.ix[0, 'mean_2']) / \
+            (std_12 *
+             np.sqrt(1.0 / ndf.local.ix[0, 'n_1'] + 1 / ndf.local.ix[0, 'n_2']))
+        pval = scipy.stats.t.sf(np.abs(t), df) * 2
+        return t, df, pval
 
     def ttest_rel(self, col1, col2):
         #(meandiff)/(std_diff/sqrt(n))
-        pass
+        ndf = self.query(
+            'SELECT AVG(diff) as mean_diff, STDDEV(diff) as std_diff, COUNT(diff) as n from (SELECT %s-%s as diff FROM %s)' % (col1, col2, self.tablename), fetch=False)
+        n = ndf.local.ix[0, 'n']
+        t = ndf.local.ix[0, 'mean_diff'] / \
+            (ndf.local.ix[0, 'std_diff'] / np.sqrt(n))
+        df = n - 1
+        pval = scipy.stats.t.sf(np.abs(t), df) * 2
+        return t, df, pval
 
     def chi_square(self, col1, col2):
         col1levels = self[col1].unique()
@@ -584,7 +611,7 @@ class BQDF(object):
                 self.where('%s==%s' % (col1, level1), '%s==%s' % (col2, level2), columns=[col1]))
             new = ((observed - expected) ** 2) / expected
             chi += new
-        pval = 2 * (1 - (scipy.stats.chi_2.cdf(chi, df)))
+        pval = scipy.stats.chi2.sf(np.abs(chi), df) * 2
         return chi, df, pval
 
     def binomial(self, col, success=1, p=.5):
@@ -596,24 +623,24 @@ class BQDF(object):
 
     def pearsonr(self, col1, col2):
         r = self.corr(col1, col2)
-        df = n - 2
-        t = r * sqrt(df) / sqrt(1 - r ^ 2)
-        pval = 2 * (1 - (scipy.stats.t.cdf(r, df)))
+        n = len(self[[col1, col2]].dropna())
+        df = n - 1
+        t = r * np.sqrt(df) / np.sqrt(1 - r ** 2)
+        pval = scipy.stats.t.sf(np.abs(t), df) * 2
         return r, df, pval
 
     def onewayanova(self, valuecol, factor):
-        pass
+        raise NotImplementedError
 
     def twowayanova(self, valuecol, factor1, factor2):
-        pass
+        raise NotImplementedError
 
     def rmanova(self, valuecol, withinfactor, betweenfactor):
-        pass
+        raise NotImplementedError
 
     def linear_regression(self, y, xcols):
         if len(xcols) == 1:
             output = _simple_linear_regression(y, x)
-
         return ouput
 
     def _simple_linear_regression(y, x):
@@ -737,7 +764,7 @@ class BQDF(object):
     def qqplot(self, col=None):
         if col is None:
             col = self.active_col
-        # TODO implement
+        raise NotImplementedError
 
     def gridplot(self):
         return bqviz._gridplot(self)
@@ -879,7 +906,7 @@ class BQDF(object):
         while not loaded:
             if elapsed_time < timeout:
                 resource = util.get_table_resource(
-                    self.con.client._apiclient, util.dictify(newremote))
+                    self.con, util.dictify(newremote))
                 # won't contain this attribute while actively streaming
                 # insertions
                 if 'numRows' in resource:
