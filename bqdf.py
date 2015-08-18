@@ -17,8 +17,6 @@ import cfg
 import warnings
 import scipy.stats
 import copy
-sys.path.append(cfg.gsdk_path)
-import bq
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')

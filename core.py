@@ -17,10 +17,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
 import util
-from bq import apiclient
-from apiclient import googleapiclient, oauth2client
 import googleapiclient.discovery
-import oauth2client.client
 from googleapiclient.discovery import build
 from oauth2client.client import GoogleCredentials
 import pprint

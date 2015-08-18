@@ -12,9 +12,7 @@ import datetime
 import os
 import numpy as np
 import cfg
-sys.path.append(cfg.gsdk_path)
-from bq import apiclient
-from apiclient import googleapiclient, oauth2client
+import oauth2client
 import googleapiclient.discovery
 import oauth2client.client
 from googleapiclient.discovery import build
