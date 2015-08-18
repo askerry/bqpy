@@ -11,8 +11,6 @@ import time
 import json
 from pympler.asizeof import asizeof
 import cfg
-sys.path.append(cfg.gsdk_path)
-import bq
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_style('white')
