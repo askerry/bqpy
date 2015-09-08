@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import sys
 import itertools
-import util
+import bqutil
 import bqviz
 from time import time, sleep
 import cfg
@@ -51,8 +51,11 @@ class BQDF(object):
     def __init__(self, con, tablename, max_rows=cfg.MAX_ROWS, fill=True, bucket=cfg.STORAGE_BUCKET):
         '''initialize a reference to table'''
         self.con = con
+        if ":" not in tablename:
+            tablename = "%s:%s" %(con.project_id, tablename)
         self.tablename = '[%s]' % tablename
         self.remote = tablename
+        print self.remote
         self.resource = None
         self.allstring = "SELECT * FROM [%s] LIMIT 1" % tablename
         self.local = None
@@ -94,10 +97,10 @@ class BQDF(object):
     def query(self, querystr, fetch=cfg.FETCH_BY_DEFAULT, dest=None, fill=True, overwrite_method='fail'):
         '''execute any arbitary query on the associated table'''
         self.fetched = fetch
-        with util.Mask_Printing():
+        with bqutil.Mask_Printing():
             output, source, exceeds_max = raw_query(
                 self.con, querystr, self.last_modified, dest=dest, fetch=fetch, overwrite_method=overwrite_method)
-            new_bqdf = BQDF(self.con, '%s' % util.stringify(source), fill=fill)
+            new_bqdf = BQDF(self.con, '%s' % bqutil.stringify(source), fill=fill)
             new_bqdf.local = output
             new_bqdf.fetched = fetch
         if exceeds_max:
@@ -135,7 +138,7 @@ class BQDF(object):
             else:
                 raise NameError("%s is already a column in table" % column)
         newremote, length = self._get_remote_reference(content, column)
-        # with util.Mask_Printing():
+        # with bqutil.Mask_Printing():
         df = self._add_col_join(newremote, column, inplace)
         if not inplace:
             return df
@@ -150,10 +153,10 @@ class BQDF(object):
         # NOTE need to fit slice locally
         # see if there is a bigquery way to do this
         fields, data = self.con.client.ReadSchemaAndRows(
-            util.dictify(self.remote), start_row=start, max_rows=end - start)
+            bqutil.dictify(self.remote), start_row=start, max_rows=end - start)
         ndf = bqresult_2_df(fields, data)
         dest = self.remote + '_slice_%sto%s' % (start, end)
-        _ = write_df_to_remote(self.con, ndf, **util.dictify(dest))
+        _ = write_df_to_remote(self.con, ndf, **bqutil.dictify(dest))
         if not self._check_write(dest):
             warnings.warn('failed to write new slice to bigquery')
         ndf = BQDF(self.con, dest)
@@ -216,14 +219,14 @@ class BQDF(object):
         startrow = 0
         while startrow < len(self):
             fields, data = self.con.client.ReadSchemaAndRows(
-                util.dictify(self.remote), start_row=startrow, max_rows=chunksize)
+                bqutil.dictify(self.remote), start_row=startrow, max_rows=chunksize)
             ndf = bqresult_2_df(fields, data)
             ndf[col + '_mod'] = ndf[col].apply(func)
             if dest is None:
                 dest = self.remote + '_mod_%s' % col
             ndf = ndf[[col + '_mod']]
             _, _ = write_df_to_remote(
-                self.con, ndf, overwrite_method='append', **util.dictify(dest))
+                self.con, ndf, overwrite_method='append', **bqutil.dictify(dest))
             startrow += chunksize
         if not self._check_write(dest):
             warnings.warn('remote writing of UDF apply function failed')
@@ -253,7 +256,7 @@ class BQDF(object):
                 gdf = self.query(group_query, fetch=True, dest=None)
                 dest = gdf.remote
             _, _ = write_df_to_remote(
-                self.con, applied_ndf, overwrite_method='append', **util.dictify(dest))
+                self.con, applied_ndf, overwrite_method='append', **bqutil.dictify(dest))
         if not self._check_write(dest):
             warnings.warn(
                 'remote writing of UDF groupby-apply function failed')
@@ -276,7 +279,7 @@ class BQDF(object):
             c for c in self.columns + df2.columns + fulldups if c not in dups]
         join_query = "SELECT %s FROM %s df1 %s JOIN %s df2 ON df1.%s=df2.%s" % (', '.join(allcols),
                                                                                 self.tablename, how, df2.tablename, left_on, right_on)
-        with util.Mask_Printing():
+        with bqutil.Mask_Printing():
             ndf = self.query(
                 join_query, fetch=self.fetched, dest=dest, overwrite_method=overwrite_method)
         if inplace:
@@ -660,7 +663,7 @@ class BQDF(object):
 ########################################
 
     def _head(self):
-        with util.Mask_Printing():
+        with bqutil.Mask_Printing():
             output, source, _ = raw_query(
                 self.con, "SELECT * FROM %s LIMIT 5" % (self.tablename), self.last_modified)
         return output
@@ -673,7 +676,7 @@ class BQDF(object):
         '''return values from single column'''
         if col is None:
             col = self.active_col
-        with util.Mask_Printing():
+        with bqutil.Mask_Printing():
             output, source, exceeds_max = raw_query(
                 self.con, "SELECT %s FROM %s" % (col, self.tablename), self.last_modified, fetch=True)
         return output[col].values
@@ -695,7 +698,7 @@ class BQDF(object):
     def describe(self):
         '''replicates df.describe() by returning a dataframe with summary measures for each numeric column'''
         # TODO this is super inefficient. investigate percentile options.
-        with util.Mask_Printing():
+        with bqutil.Mask_Printing():
             fields = self.table_schema()
         describe_data = {}
         rows = ['count', 'min', '25th percentile', '50th percentile',
@@ -718,7 +721,7 @@ class BQDF(object):
             col = self.active_col
         unique_query = "SELECT %s FROM %s GROUP BY %s" % (
             col, self.tablename, col)
-        with util.Mask_Printing():
+        with bqutil.Mask_Printing():
             ndf = self.query(unique_query, fetch=fetch)
         self._clear_active_col()
         return ndf.local[col].values
@@ -728,7 +731,7 @@ class BQDF(object):
             col = self.active_col
         top_query = "SELECT TOP(%s, %s) %s, COUNT(*) as count FROM %s" % (col,
                                                                           k, col, self.tablename)
-        with util.Mask_Printing():
+        with bqutil.Mask_Printing():
             ndf = self.query(top_query, fetch=True)
         return ndf
 
@@ -816,19 +819,19 @@ class BQDF(object):
     @property
     def last_modified(self):
         self.resource = self.get_resource(self.remote)
-        print util.convert_timestamp(self.resource['lastModifiedTime'])
+        print bqutil.convert_timestamp(self.resource['lastModifiedTime'])
         return float(self.resource['lastModifiedTime'])
 
     @property
     def creation_time(self):
         '''Creation time for the table'''
-        print util.convert_timestamp(self.resource['creationTime'])
+        print bqutil.convert_timestamp(self.resource['creationTime'])
 
     @property
     def expiration_time(self):
         '''Expiration time for the table'''
         try:
-            print util.convert_timestamp(self.resource['expirationTime'])
+            print bqutil.convert_timestamp(self.resource['expirationTime'])
         except KeyError:
             warnings.warn("No expiration set")
 
@@ -837,7 +840,7 @@ class BQDF(object):
         try:
             return int(self.resource['numRows'])
         except KeyError:
-            with util.Mask_Printing():
+            with bqutil.Mask_Printing():
                 output, source, exceeds_max = raw_query(
                     self.con, 'SELECT COUNT(*) FROM %s' % self.tablename, self.last_modified)
             return output.values[0][0]
@@ -858,7 +861,7 @@ class BQDF(object):
 
     def get_resource(self, remote):
         '''fetch info about remote table'''
-        return self.con.client._apiclient.tables().get(**util.dictify(remote)).execute()
+        return self.con.client._apiclient.tables().get(**bqutil.dictify(remote)).execute()
 
     def refresh(self):
         '''refresh the local state of the table'''
@@ -903,8 +906,8 @@ class BQDF(object):
         elapsed_time = 0
         while not loaded:
             if elapsed_time < timeout:
-                resource = util.get_table_resource(
-                    self.con, util.dictify(newremote))
+                resource = bqutil.get_table_resource(
+                    self.con, bqutil.dictify(newremote))
                 # won't contain this attribute while actively streaming
                 # insertions
                 if 'numRows' in resource:
@@ -953,7 +956,7 @@ class BQDF(object):
 
     def _get_nth_row(self, n):
         fields, data = con.client.ReadSchemaAndRows(
-            util.dictify(self.remote), start_row=n, max_rows=1)
+            bqutil.dictify(self.remote), start_row=n, max_rows=1)
         result = {f['name']: d for f, d in zip(fields, data[0])}
         return result
 

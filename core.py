@@ -11,13 +11,15 @@ import time
 import json
 from pympler.asizeof import asizeof
 import cfg
+import httplib2
 import matplotlib.pyplot as plt
 import seaborn as sns
+#from bq import bq
 sns.set_style('white')
-import util
+import bqutil
+import bigquery_client
 import googleapiclient.discovery
 from googleapiclient.discovery import build
-from oauth2client.client import GoogleCredentials
 import pprint
 
 
@@ -43,9 +45,10 @@ def run_query(con, querystr, destination_table=None, dry_run=False, create_dispo
     '''
     if destination_table is not None:
         print "writing to temporary table %s" % destination_table
+    print destination_table
     query_response = con.client.Query(
         querystr, destination_table=destination_table, dry_run=dry_run, write_disposition=write_disposition, create_disposition=create_disposition, allow_large_results=allow_large_results)
-    util._log_query(con, query_response)
+    bqutil._log_query(con, query_response)
     return query_response
 
 
@@ -98,7 +101,7 @@ def bqresult_2_df(fields, data):
 
 def create_column_from_values(con, col, content, remotetable, length=None):
     '''create new dataframe with column content (which can then be joined with existing table)'''
-    d = util.dictify(remotetable)
+    d = bqutil.dictify(remotetable)
     d['tableId'] = d['tableId'] + '_newcol_' + \
         str(np.random.randint(1000, 10000))
     if not hasattr(content, '__iter__'):
@@ -134,7 +137,7 @@ def write_df_to_remote(con, df, projectId=None, datasetId=None, tableId=None, ov
 
 def stream_df_to_remote(con, df, overwrite_method='fail', projectId=None, datasetId=None, tableId=None):
     '''write pandas dataframe as bigquery table'''
-    schema = {"fields": util.bqjson_from_df(df, dumpjson=False)}
+    schema = {"fields": bqutil.bqjson_from_df(df, dumpjson=False)}
     dataset_ref = {'datasetId': datasetId,
                    'projectId': projectId}
     table_ref = {'tableId': tableId,
@@ -155,12 +158,12 @@ def stream_df_to_remote(con, df, overwrite_method='fail', projectId=None, datase
     body = {'kind': 'bigquery#tableDataInsertAllRequest', 'rows': datarows}
     update = con.client._apiclient.tabledata().insertAll(
         body=body, **table_ref).execute()
-    return con, util.stringify(table_ref)
+    return con, bqutil.stringify(table_ref)
 
 
 def batch_df_to_remote(con, df, overwrite_method='fail', delete='True', name=None, projectId=None, datasetId=None, tableId=None):
     '''write pandas dataframe as bigquery table'''
-    schema = {"fields": util.bqjson_from_df(df, dumpjson=False)}
+    schema = {"fields": bqutil.bqjson_from_df(df, dumpjson=False)}
     table_ref = {'tableId': tableId,
                  'datasetId': datasetId,
                  'projectId': projectId}
@@ -172,17 +175,17 @@ def batch_df_to_remote(con, df, overwrite_method='fail', delete='True', name=Non
         write_disposition = 'WRITE_EMPTY'
     df.to_csv(tableId + '.csv', index=False)
     filename = os.path.join(os.getcwd(), tableId + '.csv')
-    project = util.dictify(self.remote)['projectId']
+    project = bqutil.dictify(self.remote)['projectId']
     if name is None:
         name = datasetId + tableId
-    util.file_to_bucket(con, project, self.bucket, filename, name=name)
+    bqutil.file_to_bucket(con, project, self.bucket, filename, name=name)
     jobref = bucket_to_bq(con, table_ref, projectId, bucket, name,
                           schema=schema, write_disposition=write_disposition, wait=True)
     if delete:
         delete_from_bucket(con, project, bucket, name)
-    return con, util.stringify(table_ref)
+    return con, bqutil.stringify(table_ref)
 
-
+    
 class Connection(object):
 
     '''connects to a bigquery client for the provided project_id
@@ -201,10 +204,12 @@ class Connection(object):
         self.cache_max = cache_max
         if cache_max is None:
             self.cache_max = cfg.CACHE_MAX
-        self.client = bq.Client.Get()
+        self.client = bigquery_client.BigqueryClient(api='bigquery', api_version='v2')
         self.client.project_id = project_id
-        self.client._apiclient = util.get_bq_client()
-        self.client._storageclient = util.get_storage_client()
+        self.client.credentials=bqutil.credentialize()
+        http = self.client.credentials.authorize(httplib2.Http())
+        self.client._apiclient = bqutil.get_bigquery_api(http)
+        self.client._storageclient=bqutil.get_storage_api(http)
 
     def create_table(self, project_id, dataset_id, table_id, df, df_obj):
         _, table = write_df_to_remote(
@@ -229,45 +234,6 @@ class Connection(object):
 
     def flush_cache(self):
         self.querycache = {}
-
-    # Broken and low priority
-    '''
-    def storage_report(self, projects=None, datasets=None, tables=None, storage_price_GBDay=.20 / 30):
-        storage_data = {'project': [], 'dataset': [], 'table': [],
-                        'storage': [], 'duration': [], 'price': [], 'cost': []}
-        if projects is None:
-            projects = [
-                p['id'] for p in self.client._apiclient.projects().list().execute()['projects']]
-        for p in projects:
-            all_sets = [d['id'] for d in self.client._apiclient.datasets().list(
-                projectId=p).execute()['datasets']]
-            if datasets is None:
-                datasets = all_sets
-            for d in all_sets:
-                if d['datasetReference']['datasetId'] in datasets:
-                    all_tables = [t['id'] for t in self.client._apiclient.datasets().list(
-                        projectId=p, datasetId=d).execute()['tables']]
-                    if tables is None:
-                        tables = all_tables
-                    for t in all_tables:
-                        if d['tableReference']['tableId']in tables:
-                            resource = get_table_resource(
-                                self.con, {'projectId': p, 'datasetId': d, 'tableId': t})
-                            existed_dur = datetime.datetme.now(
-                            ) - util.convert_timestamp(resource['creationTime'])
-                            days = float(existed_dur) / 60 / 60 / 24
-                            storage_data['project'].append(p)
-                            storage_data['dataset'].append(d)
-                            storage_data['table'].append(t)
-                            mb = resource['numBytes'] / 1048576
-                            storage_data['MB'].append(mb)
-                            storage_data['duration'].append(months)
-                            storage_data[
-                                'price(GB/day)'].append(storage_price_GBDay)
-                            storage_data['cost'].append(
-                                days * (mb / 1000) * storage_price_GBDay)
-        return pd.DataFrame(data=storage_data)
-    '''
 
     def _check_query(self, querystr, fetch, last_modified):
         return querystr in self.querycache and self.querycache[querystr]['fetched'] == fetch and self.querycache[querystr]['timestamp'] > last_modified
@@ -298,7 +264,7 @@ class Connection(object):
                 print "No projects found."
             print "\n"
             return projectids
-        except apiclient.errors.HttpError as err:
+        except googleapiclient.errors.HttpError as err:
             print 'Error in list_projects:', pprint.pprint(err.content)
 
     def list_datasets(self, project):
@@ -325,7 +291,7 @@ class Connection(object):
                 print "No datasets found."
             print "\n"
             return datasetids
-        except apiclient.errors.HttpError as err:
+        except googleapiclient.errors.HttpError as err:
             print 'Error in list_datasets:', pprint.pprint(err.content)
 
     def list_tables(self, project, dataset):
@@ -353,7 +319,7 @@ class Connection(object):
                 print "No tables found."
             print "\n"
             return tableids
-        except apiclient.errors.HttpError as err:
+        except googleapiclient.errors.HttpError as err:
             print 'Error in list_tables:', pprint.pprint(err.content)
 
     def delete_table(self, projectid, datasetid, tableid):

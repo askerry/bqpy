@@ -12,7 +12,9 @@ import datetime
 import os
 import numpy as np
 import cfg
+import httplib2
 import oauth2client
+import secrets
 import googleapiclient.discovery
 import oauth2client.client
 from googleapiclient.discovery import build
@@ -59,22 +61,34 @@ def wait_for_job(jobref, interval=2, timeout=60):
         raise RuntimeError('Job timed out.')
 
 
-def get_bq_client():
-    """returns an initialized and authorized bigquery client"""
-    credentials = GoogleCredentials.get_application_default()
-    if credentials.create_scoped_required():
-        credentials = credentials.create_scoped(
+#modified rom Tom's util.bigquery (requires copying secrets.py into the dir)
+def credentialize():
+    """Helper to load BigQuery credentials and do OAuth for us."""
+    flow = oauth2client.client.OAuth2WebServerFlow(
+            secrets.BIGQUERY_CLIENT_ID,
+            secrets.BIGQUERY_CLIENT_SECRET,
             'https://www.googleapis.com/auth/bigquery')
-    return build('bigquery', 'v2', credentials=credentials)
+
+    cred_path = os.path.dirname(os.path.abspath(__file__))
+    storage = oauth2client.file.Storage(
+            '%s/bigquery_credentials.dat' % cred_path)
+    credentials = storage.get()
+    if credentials is None or credentials.invalid:
+        import argparse
+        flags = (
+            argparse.ArgumentParser(parents=[oauth2client.tools.argparser])
+            .parse_args(["--noauth_local_webserver"]))
+        credentials = oauth2client.tools.run_flow(flow, storage, flags)
+    return credentials
 
 
-def get_storage_client():
-    """returns an initialized and authorized bigquery client"""
-    credentials = GoogleCredentials.get_application_default()
-    if credentials.create_scoped_required():
-        credentials = credentials.create_scoped(
-            'https://www.googleapis.com/auth/bigquery')
-    return build('storage', 'v1', credentials=credentials)
+def get_bigquery_api(http):
+    """returns an initialized and authorized bigquery api"""
+    return build('bigquery', 'v2', http)
+
+def get_storage_api(http):
+    """returns an initialized and authorized google cloud storage api"""
+    return build('storage', 'v1', http)
 
 
 def get_table_resource(con, requestedtable):
@@ -164,12 +178,19 @@ def stringify(tabledict):
 
 def dictify(tablestr):
     '''converts bq-style path string to table dictionary'''
-    d = {}
-    d['projectId'] = tablestr[:tablestr.index(':')]
-    d['datasetId'] = tablestr[tablestr.index(':') + 1:tablestr.index('.')]
-    d['tableId'] = tablestr[tablestr.index('.') + 1:]
-    return d
+    p=tablestr[:find_nth(tablestr, ':',tablestr.count(":"))]
+    remaining=tablestr[len(p)+1:]
+    d=remaining[:remaining.index('.')]
+    t=remaining[remaining.index('.')+1:]
+    return {'projectId':p, 'datasetId':d, 'tableId':t}
 
+def find_nth(fullstring,substr, n):
+    string=fullstring
+    for i in range(n):
+        some_index=string.find(substr)
+        index = len(fullstring)-len(string)+some_index
+        string=string[some_index+1:]
+    return index
 
 def convert_timestamp(tstamp):
     if len(tstamp) == 13 and '.' not in tstamp:
@@ -248,7 +269,7 @@ def bqjson_from_df(df, dumpjson=True):
     else:
         return dicts
 
-
+    
 def query(cursor, query):
     '''query sql cursor'''
     cursor.execute(query)
